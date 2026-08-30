@@ -1,0 +1,1 @@
+"""Aiogram handlers (intentionally thin)."""

@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kolobot"
+version = "0.1.0"
+description = "Personal Telegram smart document archive bot (Phase 1)"
+readme = "CLAUDE.md"
+requires-python = ">=3.9"
+dependencies = [
+    "aiogram>=3.4,<4",
+    "google-genai>=1.0",
+    "chromadb>=0.5",
+    "python-dotenv>=1.0",
+    "aiohttp>=3.9",
+    "openpyxl>=3.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[project.scripts]
+kolobot = "kolobot.main:main"
+
+[tool.setuptools.packages.find]
+include = ["kolobot*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]

@@ -1,0 +1,31 @@
+        prompt = (
+            "Extract structured metadata and full text from this image. "
+            "Return JSON with the following schema:\n"
+            "{\n"
+            '  "doc_type": "receipt|invoice|contract|id_card|note|other",\n'
+            '  "title": "Short title describing the document",\n'
+            '  "summary": "Brief 1-2 sentence summary of content, including key amounts and main items/services if present",\n'
+            '  "key_value_pairs": [{"key": "Field name", "value": "Field value"}],\n'
+            '  "raw_text": "Full transcribed text from image",\n'
+            '  "language": "uk|en|ru|other",\n'
+            '  "item_name": "Найменування (головний товар або послуга)",\n'
+            '  "doc_date": "Дата документа у форматі DD.MM.YYYY",\n'
+            '  "incoming": "Прихід (кількість або сума, що надійшла, якщо є)",\n'
+            '  "outgoing": "Розхід (кількість або сума, що витрачена, якщо є)",\n'
+            '  "balance": "Залишок (якщо вказано в документі)",\n'
+            '  "unit": "Одиниці виміру (шт, кг, л, тощо)",\n'
+            '  "doc_number": "Номер накладної або документа (наприклад 3, INV-001)",\n'
+            '  "supplier": "Постачальник або контрагент",\n'
+            '  "notes": "Примітки (додаткова важлива інформація)",\n'
+            '  "items": [{"num": 1, "name": "Item name", "quantity": "10", "unit": "шт", "price_no_vat": "150.00", "total_no_vat": "1500.00"}],\n'
+            '  "totals": {"total_no_vat": "1975.00", "vat": "395.00", "total_with_vat": "2370.00"}\n'
+            "}\n\n"
+            "IMPORTANT FOR INVENTORY FIELDS:\n"
+            "- Extract 'item_name', 'doc_date', 'incoming', 'outgoing', 'balance', 'unit', 'doc_number', 'supplier', 'notes' based on the main content of the document.\n"
+            "- These fields will be displayed as a single row in an inventory ledger.\n"
+            "- If a field is not present, leave it as an empty string.\n\n"
+            "IMPORTANT FOR items and totals:\n"
+            "- Still extract ALL line items from tables/lists in the document with their number, name, quantity, unit, price and total.\n"
+            "- Extract totals: total without VAT, VAT amount, total with VAT.\n"
+            "- If no table/items found, return empty arrays/objects."
+        )

@@ -1,0 +1,24 @@
+{
+    "mcpServers": {
+        "github-mcp-server": {
+            "command": "npx",
+            "args": [
+                "-y",
+                "dotenv-cli",
+                "-e",
+                ".env",
+                "--",
+                "npx",
+                "-y",
+                "@modelcontextprotocol/server-github"
+            ],
+            "disabled": false
+        },
+        "playwright": {
+            "command": "npx",
+            "args": [
+                "@playwright/mcp@latest"
+            ]
+        }
+    }
+}
