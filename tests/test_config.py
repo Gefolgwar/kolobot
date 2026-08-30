@@ -40,7 +40,6 @@ def test_load_config_returns_settings_with_defaults(monkeypatch, tmp_path):
     monkeypatch.setenv("GEMINI_KEYS_EMBED", "e1")
     monkeypatch.setenv("CHROMA_PATH", str(chroma))
     monkeypatch.setenv("DOWNLOADS_PATH", str(downloads))
-    monkeypatch.setenv("AI_PROVIDER", "google")
     for key in (
         "RPM_LIMIT",
         "RPD_LIMIT",
@@ -64,6 +63,8 @@ def test_load_config_returns_settings_with_defaults(monkeypatch, tmp_path):
     assert settings.cooldown_sec == 60
     assert settings.rag_top_k == 3
     assert settings.confirm_timeout_sec == 600
+    assert settings.generate_model == "gemini-2.5-flash"
+    assert settings.embed_model == "text-embedding-004"
 
 
 def test_load_config_fails_on_empty_generate_keys(monkeypatch, tmp_path):
@@ -73,45 +74,6 @@ def test_load_config_fails_on_empty_generate_keys(monkeypatch, tmp_path):
     monkeypatch.setenv("GEMINI_KEYS_EMBED", "e1")
     monkeypatch.setenv("CHROMA_PATH", str(tmp_path / "chroma"))
     monkeypatch.setenv("DOWNLOADS_PATH", str(tmp_path / "dl"))
-    monkeypatch.setenv("AI_PROVIDER", "google")
 
     with pytest.raises(ConfigError, match="GEMINI_KEYS_GENERATE"):
         load_config(dotenv_path="")
-
-
-def test_build_app_wires_nvidia_client(monkeypatch, tmp_path):
-    from kolobot.gemini_gateway import NvidiaClient
-    from kolobot.main import build_app
-
-    monkeypatch.setenv("BOT_TOKEN", "123456:ABC-DEF")
-    monkeypatch.setenv("OWNER_USER_ID", "99")
-    monkeypatch.setenv("GEMINI_KEYS_GENERATE", "g1")
-    monkeypatch.setenv("GEMINI_KEYS_EMBED", "e1")
-    monkeypatch.setenv("CHROMA_PATH", str(tmp_path / "chroma"))
-    monkeypatch.setenv("DOWNLOADS_PATH", str(tmp_path / "dl"))
-    monkeypatch.setenv("AI_PROVIDER", "nvidia")
-    monkeypatch.setenv("NVIDIA_GENERATE_MODEL", "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning")
-    monkeypatch.setenv("NVIDIA_API_KEY", "nvapi-secret")
-
-    dp, bot, settings = build_app()
-
-    assert settings.ai_provider == "nvidia"
-    assert settings.nvidia_generate_model == "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"
-    assert settings.nvidia_api_key == "nvapi-secret"
-
-
-def test_load_config_nvidia_without_gemini_keys(monkeypatch, tmp_path):
-    monkeypatch.setenv("BOT_TOKEN", "123456:ABC-DEF")
-    monkeypatch.setenv("OWNER_USER_ID", "99")
-    monkeypatch.delenv("GEMINI_KEYS_GENERATE", raising=False)
-    monkeypatch.delenv("GEMINI_KEYS_EMBED", raising=False)
-    monkeypatch.setenv("CHROMA_PATH", str(tmp_path / "chroma"))
-    monkeypatch.setenv("DOWNLOADS_PATH", str(tmp_path / "dl"))
-    monkeypatch.setenv("AI_PROVIDER", "nvidia")
-    monkeypatch.setenv("NVIDIA_API_KEY", "nvapi-secret")
-
-    settings = load_config(dotenv_path="")
-
-    assert settings.ai_provider == "nvidia"
-    assert settings.gemini_keys_generate == ["nvapi-secret"]
-    assert settings.gemini_keys_embed == ["nvapi-secret"]

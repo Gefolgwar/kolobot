@@ -85,7 +85,7 @@ async def test_image_document_accepted(handler: MediaHandler):
 
 @pytest.mark.asyncio
 async def test_non_image_document_rejected(handler: MediaHandler):
-    msg = _make_doc_message(mime="application/pdf")
+    msg = _make_doc_message(mime="application/zip")
     result = await handler.handle_media(msg)
     assert result is None
     msg.answer.assert_awaited_once()

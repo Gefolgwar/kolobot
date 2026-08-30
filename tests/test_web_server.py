@@ -21,13 +21,16 @@ def warehouse_env(tmp_path):
     fs = MagicMock()
     fs._base = str(tmp_path)
 
-    return db, fs
+    vs = MagicMock()
+    vs.list_all_ids.return_value = []
+
+    return db, fs, vs
 
 
 @pytest.mark.asyncio
 async def test_web_server_index(warehouse_env):
-    db, fs = warehouse_env
-    server = WebServer(warehouse_db=db, file_store=fs, owner_user_id=42)
+    db, fs, vs = warehouse_env
+    server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
     client = TestClient(TestServer(server._app))
     await client.start_server()
 
@@ -43,8 +46,8 @@ async def test_web_server_index(warehouse_env):
 
 @pytest.mark.asyncio
 async def test_api_items_empty(warehouse_env):
-    db, fs = warehouse_env
-    server = WebServer(warehouse_db=db, file_store=fs, owner_user_id=42)
+    db, fs, vs = warehouse_env
+    server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
     client = TestClient(TestServer(server._app))
     await client.start_server()
 
@@ -60,8 +63,8 @@ async def test_api_items_empty(warehouse_env):
 
 @pytest.mark.asyncio
 async def test_api_documents_empty(warehouse_env):
-    db, fs = warehouse_env
-    server = WebServer(warehouse_db=db, file_store=fs, owner_user_id=42)
+    db, fs, vs = warehouse_env
+    server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
     client = TestClient(TestServer(server._app))
     await client.start_server()
 
@@ -77,7 +80,7 @@ async def test_api_documents_empty(warehouse_env):
 
 @pytest.mark.asyncio
 async def test_api_documents_with_doc_type(warehouse_env):
-    db, fs = warehouse_env
+    db, fs, vs = warehouse_env
     doc_id = db.add_document(
         filename="test.xlsx", file_type="excel", doc_type="НАКЛАДНА",
     )
@@ -88,7 +91,7 @@ async def test_api_documents_with_doc_type(warehouse_env):
         source_row="Рядок 3: 12345 | Болт М8",
     )
 
-    server = WebServer(warehouse_db=db, file_store=fs, owner_user_id=42)
+    server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
     client = TestClient(TestServer(server._app))
     await client.start_server()
 
@@ -116,10 +119,10 @@ async def test_api_documents_with_doc_type(warehouse_env):
 
 @pytest.mark.asyncio
 async def test_api_delete_document(warehouse_env):
-    db, fs = warehouse_env
+    db, fs, vs = warehouse_env
     doc_id = db.add_document(filename="del.xlsx", file_type="excel")
 
-    server = WebServer(warehouse_db=db, file_store=fs, owner_user_id=42)
+    server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
     client = TestClient(TestServer(server._app))
     await client.start_server()
 

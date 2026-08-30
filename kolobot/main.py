@@ -7,7 +7,6 @@ import html
 import logging
 import os
 import sys
-from dataclasses import replace
 from typing import Any
 
 from aiogram import Bot, Dispatcher, F, Router
@@ -20,7 +19,7 @@ from kolobot.archive_service import ArchiveService
 from kolobot.config import ConfigError, load_config
 from kolobot.doc_structurer import DocStructurer, ParseStatus
 from kolobot.file_store import FileStore
-from kolobot.gemini_gateway import GeminiError, GeminiGateway, NvidiaClient
+from kolobot.gemini_gateway import GeminiError, GeminiGateway
 from kolobot.handlers.commands import cmd_status, router as commands_router
 from kolobot.handlers.list_delete import ListDeleteHandler
 from kolobot.handlers.media import MediaHandler, _ext_from_mime
@@ -273,13 +272,9 @@ def _save_to_warehouse(
     return ""
 
 
-def build_app(use_qwen3_vl: bool = False, use_gmodel: bool = False):
+def build_app():
     """Construct all deep modules and wire together. Returns (dp, bot, settings)."""
     settings = load_config()
-    if use_qwen3_vl:
-        settings = replace(settings, use_qwen3_vl=True)
-    if use_gmodel:
-        settings = replace(settings, use_gmodel=True)
 
     gen_pool = KeyPool(
         keys=settings.gemini_keys_generate,
@@ -301,41 +296,12 @@ def build_app(use_qwen3_vl: bool = False, use_gmodel: bool = False):
     warehouse_db = WarehouseDB(db_path=settings.warehouse_db_path)
     warehouse_db.init_db()
 
-    if settings.ai_provider == "nvidia":
-        if settings.nvidia_api_key:
-            gen_pool = KeyPool(
-                keys=[settings.nvidia_api_key],
-                kind=PoolKind.GENERATE,
-                rpm_limit=settings.rpm_limit,
-                rpd_limit=settings.rpd_limit,
-                cooldown_sec=settings.cooldown_sec,
-            )
-            emb_pool = KeyPool(
-                keys=[settings.nvidia_api_key],
-                kind=PoolKind.EMBED,
-                rpm_limit=settings.rpm_limit,
-                rpd_limit=settings.rpd_limit,
-                cooldown_sec=settings.cooldown_sec,
-            )
-        client = NvidiaClient()
-        gateway = GeminiGateway(
-            gen_pool=gen_pool,
-            emb_pool=emb_pool,
-            client=client,
-            generate_model=settings.nvidia_generate_model,
-            embed_model=settings.nvidia_embed_model,
-            use_qwen3_vl=settings.use_qwen3_vl,
-            use_gmodel=settings.use_gmodel,
-        )
-    else:
-        gateway = GeminiGateway(
-            gen_pool=gen_pool,
-            emb_pool=emb_pool,
-            generate_model=settings.generate_model,
-            embed_model=settings.embed_model,
-            use_qwen3_vl=settings.use_qwen3_vl,
-            use_gmodel=settings.use_gmodel,
-        )
+    gateway = GeminiGateway(
+        gen_pool=gen_pool,
+        emb_pool=emb_pool,
+        generate_model=settings.generate_model,
+        embed_model=settings.embed_model,
+    )
     archive_svc = ArchiveService(
         gateway=gateway, vector_store=vector_store, file_store=file_store
     )
@@ -781,13 +747,13 @@ def build_app(use_qwen3_vl: bool = False, use_gmodel: bool = False):
     return dp, bot, settings
 
 
-async def run(use_qwen3_vl: bool = False, use_gmodel: bool = False) -> None:
+async def run() -> None:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     try:
-        dp, bot, settings = build_app(use_qwen3_vl=use_qwen3_vl, use_gmodel=use_gmodel)
+        dp, bot, settings = build_app()
     except ConfigError as exc:
         logger.error("Config error: %s", exc)
         raise SystemExit(2) from exc
@@ -796,9 +762,8 @@ async def run(use_qwen3_vl: bool = False, use_gmodel: bool = False) -> None:
     if web_server:
         await web_server.start()
 
-    ocr_name = "gmodel" if settings.use_gmodel else ("qwen3-vl" if settings.use_qwen3_vl else "unlimited-ocr")
-    logger.info("kolobot starting for owner_user_id=%s, ocr=%s",
-                settings.owner_user_id, ocr_name)
+    logger.info("kolobot starting for owner_user_id=%s, model=%s",
+                settings.owner_user_id, settings.generate_model)
     try:
         await dp.start_polling(bot)
     finally:
@@ -807,15 +772,8 @@ async def run(use_qwen3_vl: bool = False, use_gmodel: bool = False) -> None:
 
 
 def main() -> None:
-    import argparse
-    parser = argparse.ArgumentParser(description="kolobot")
-    parser.add_argument("--qwen3-vl", action="store_true", default=False,
-                        help="Use Qwen3-VL-2B instead of Unlimited-OCR for text recognition")
-    parser.add_argument("--gmodel", action="store_true", default=False,
-                        help="Use Gemini API for OCR instead of local models")
-    args = parser.parse_args()
     try:
-        asyncio.run(run(use_qwen3_vl=args.qwen3_vl, use_gmodel=args.gmodel))
+        asyncio.run(run())
     except KeyboardInterrupt:
         sys.exit(0)
 
