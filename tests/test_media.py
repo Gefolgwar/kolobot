@@ -102,42 +102,29 @@ async def test_oversize_image_rejected(handler: MediaHandler):
 
 
 @pytest.mark.asyncio
-async def test_album_rejected_with_single_debounced_reply(handler: MediaHandler):
+async def test_album_photos_accepted(handler: MediaHandler):
     m1 = _make_album_message("grp-1")
     m2 = _make_album_message("grp-1")
 
     r1 = await handler.handle_media(m1)
     r2 = await handler.handle_media(m2)
 
-    assert r1 is None
-    assert r2 is None
-    # Only one reply for the group
-    total_answers = m1.answer.await_count + m2.answer.await_count
-    assert total_answers == 1
+    assert r1 is not None
+    assert r2 is not None
+    assert r1["file_id"] == "photo_fid_123"
+    assert r2["file_id"] == "photo_fid_123"
+    m1.answer.assert_not_called()
+    m2.answer.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_single_flight_rejects_second_image_while_pending(handler: MediaHandler):
+async def test_multiple_uploads_accepted_without_single_flight_blocking(handler: MediaHandler):
     msg1 = _make_photo_message()
     r1 = await handler.handle_media(msg1)
     assert r1 is not None
 
-    # Slot is held; second image should be rejected
-    msg2 = _make_photo_message()
-    r2 = await handler.handle_media(msg2)
-    assert r2 is None
-    msg2.answer.assert_awaited_once()
-    text = msg2.answer.await_args.args[0].lower()
-    assert "зберегти" in text or "відхил" in text or "закінч" in text or "поточн" in text
-
-
-@pytest.mark.asyncio
-async def test_clear_pending_allows_new_upload(handler: MediaHandler):
-    msg1 = _make_photo_message()
-    await handler.handle_media(msg1)
-
-    handler.clear_pending()
-
+    # Second image should also be accepted without blocking
     msg2 = _make_photo_message()
     r2 = await handler.handle_media(msg2)
     assert r2 is not None
+    msg2.answer.assert_not_called()

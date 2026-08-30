@@ -1,8 +1,7 @@
-"""Media intake handler: image-only, album reject, single-flight."""
+"""Media intake handler: accepts photos, image documents, PDFs, and media albums."""
 
 from __future__ import annotations
 
-import time
 from typing import Any, Dict, Optional
 
 from kolobot.file_store import FileStore
@@ -13,28 +12,15 @@ MAX_FILE_SIZE = 20_000_000
 
 class MediaHandler:
     """
-    Accept owner photos and image documents, reject albums/non-images/oversize.
-    Enforce single-flight: one pending confirm at a time.
+    Accept owner photos, image documents, PDFs, and media albums.
+    Validates MIME type and file size (<20MB), allocating a temporary file slot.
     """
 
     def __init__(self, file_store: FileStore, owner_user_id: int) -> None:
         self._file_store = file_store
         self._owner = owner_user_id
-        self._pending: bool = False
-        self._album_seen: Dict[str, float] = {}
-        self._album_debounce = 3.0
 
     async def handle_media(self, message: Any) -> Optional[Dict[str, Any]]:
-        if getattr(message, "media_group_id", None):
-            return await self._reject_album(message)
-
-        if self._pending:
-            await message.answer(
-                "Спочатку заверши поточний документ — "
-                "Зберегти або Відхилити."
-            )
-            return None
-
         photo = getattr(message, "photo", None)
         doc = getattr(message, "document", None)
 
@@ -67,7 +53,6 @@ class MediaHandler:
             )
             return None
 
-        self._pending = True
         tmp_path = self._file_store.save_tmp(b"", ext=ext)
 
         return {
@@ -82,22 +67,13 @@ class MediaHandler:
         }
 
     def clear_pending(self) -> None:
-        self._pending = False
+        """Compatibility no-op (single-flight is deprecated in favor of DocumentQueueService)."""
+        pass
 
     @property
     def is_pending(self) -> bool:
-        return self._pending
-
-    async def _reject_album(self, message: Any) -> None:
-        gid = message.media_group_id
-        now = time.time()
-        last = self._album_seen.get(gid, 0)
-        if now - last > self._album_debounce:
-            self._album_seen[gid] = now
-            await message.answer(
-                "Надсилай по одному зображенню за раз, без альбомів."
-            )
-        return None
+        """Compatibility property."""
+        return False
 
 
 def _ext_from_mime(mime: str) -> str:

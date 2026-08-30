@@ -15,6 +15,85 @@ class ParseStatus(str, Enum):
     RAW_FALLBACK = "raw_fallback"
 
 
+def normalize_doc_type(
+    doc_type: str = "",
+    title: str = "",
+    summary: str = "",
+    raw_text: str = "",
+) -> str:
+    """
+    Normalize document type to 'вимога', 'накладна', or original type.
+    Determined strictly by the printed header/title of the document.
+    """
+    dt_lower = (doc_type or "").strip().lower()
+    title_lower = (title or "").strip().lower()
+    summary_lower = (summary or "").strip().lower()
+    text_lower = (raw_text or "").strip().lower()
+    header_lines = "\n".join(text_lower.splitlines()[:5])
+
+    # Priority 1: Check header lines of raw text (top of document)
+    if re.search(r"\bвимога\b", header_lines) or re.search(r"\bакт\s+списанн", header_lines):
+        return "вимога"
+    if (
+        re.search(r"\bнакладна\b", header_lines)
+        or re.search(r"\bприбутков", header_lines)
+        or re.search(r"\bвидатков", header_lines)
+        or re.search(r"\bтоварна\b", header_lines)
+        or re.search(r"\bттн\b", header_lines)
+    ):
+        return "накладна"
+
+    # Priority 2: Check explicit title
+    if (
+        "вимога" in title_lower
+        or "списанн" in title_lower
+    ):
+        return "вимога"
+    if (
+        "накладна" in title_lower
+        or "прибутков" in title_lower
+        or "видатков" in title_lower
+        or "товарна" in title_lower
+        or "ттн" in title_lower
+    ):
+        return "накладна"
+
+    # Priority 3: Check summary
+    if "вимога" in summary_lower or "списанн" in summary_lower:
+        return "вимога"
+    if "накладна" in summary_lower or "прибутков" in summary_lower or "видатков" in summary_lower:
+        return "накладна"
+
+    # Priority 4: Explicit doc_type if no header/title/summary match
+    if (
+        "вимога" in dt_lower
+        or "списанн" in dt_lower
+    ):
+        return "вимога"
+    if (
+        "накладна" in dt_lower
+        or "прибутков" in dt_lower
+        or "видатков" in dt_lower
+    ):
+        return "накладна"
+
+    # Priority 5: Full raw text keyword search with boundaries
+    if (
+        re.search(r"\bвимога\s*№", text_lower)
+        or re.search(r"\bвимога-накладна", text_lower)
+        or re.search(r"\bакт\s+списанн", text_lower)
+    ):
+        return "вимога"
+    if (
+        re.search(r"\bнакладна\s*№", text_lower)
+        or re.search(r"\bприбуткова\s+накладна", text_lower)
+        or re.search(r"\bвидаткова\s+накладна", text_lower)
+    ):
+        return "накладна"
+
+    return dt_lower or "other"
+
+
 @dataclass
 class Document:
     doc_type: str = "other"
@@ -80,8 +159,12 @@ class DocStructurer:
         if data is None:
             if is_retry:
                 fallback_meta = self.parse_fallback_text(model_text)
-                doc = Document(
+                norm_dt = normalize_doc_type(
                     doc_type="other",
+                    raw_text=model_text,
+                )
+                doc = Document(
+                    doc_type=norm_dt,
                     raw_text=model_text,
                     doc_number=fallback_meta.get("doc_number", ""),
                     doc_date=fallback_meta.get("doc_date", ""),
@@ -91,12 +174,22 @@ class DocStructurer:
                 return ParseResult(status=ParseStatus.RAW_FALLBACK, doc=doc)
             return ParseResult(status=ParseStatus.NEEDS_RETRY)
 
+        raw_doc_type = str(data.get("doc_type", "other") or "other")
+        title = str(data.get("title", "") or "")
+        summary = str(data.get("summary", "") or "")
+        raw_text = str(data.get("raw_text", "") or "")
+
+        norm_doc_type = normalize_doc_type(
+            doc_type=raw_doc_type,
+            title=title,
+            summary=summary,
+            raw_text=raw_text,
+        )
+
         doc_number = str(data.get("doc_number", "") or "")
         doc_date = str(data.get("doc_date", "") or "")
         items = self._norm_items(data.get("items"))
         totals = self._norm_totals(data.get("totals"))
-
-        raw_text = data.get("raw_text", "") or ""
 
         # Apply fallback text extraction if fields are missing but raw_text is present
         if raw_text and (not doc_number or not doc_date or not items or not totals):
@@ -111,9 +204,9 @@ class DocStructurer:
                 totals = fb.get("totals", {})
 
         doc = Document(
-            doc_type=data.get("doc_type", "other") or "other",
-            title=data.get("title", "") or "",
-            summary=data.get("summary", "") or "",
+            doc_type=norm_doc_type,
+            title=title,
+            summary=summary,
             key_value_pairs=self._norm_kvs(data.get("key_value_pairs")),
             raw_text=raw_text,
             language=data.get("language", "") or "",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 import json
 import logging
@@ -12,6 +13,7 @@ from typing import Any, Dict, List, Optional
 from aiohttp import web
 
 from kolobot.file_store import FileStore
+from kolobot.log_service import LogBuffer, LogEntry, get_global_log_buffer, setup_logging_capture
 from kolobot.vector_store import VectorStore
 from kolobot.warehouse_db import WarehouseDB
 
@@ -38,6 +40,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
         .badge-nakladna { background: rgba(16,185,129,0.15); color: #34d399; }
         .badge-vymoha { background: rgba(244,63,94,0.15); color: #fb7185; }
         .progress-bar { transition: width 0.3s ease; }
+        .cursor-blink { animation: blink 1s step-end infinite; }
+        @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+        .log-terminal { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
     </style>
 </head>
 <body class="min-h-screen font-sans pb-12">
@@ -79,19 +84,44 @@ HTML_PAGE = r"""<!DOCTYPE html>
                 <i class="fa-solid fa-file-lines mr-1"></i> Документи
                 <span id="docs-count" class="ml-1 px-2 py-0.5 bg-slate-800 text-slate-400 rounded-full text-xs">0</span>
             </button>
+            <button id="tab-logs" onclick="switchTab('logs')" class="pb-3 px-1 text-sm font-semibold tab-inactive transition flex items-center">
+                <i class="fa-solid fa-terminal mr-1.5 text-xs"></i> Log
+                <span id="logs-count" class="ml-1.5 px-2 py-0.5 bg-slate-800 text-slate-400 rounded-full text-xs font-mono">0</span>
+            </button>
         </div>
     </div>
 
     <!-- Warehouse Tab -->
     <main id="panel-warehouse" class="max-w-7xl mx-auto px-6">
-        <div class="glass rounded-2xl p-4 mb-6 flex flex-col sm:flex-row items-center justify-between gap-4">
-            <div class="relative w-full sm:w-96">
-                <i class="fa-solid fa-magnifying-glass absolute left-3.5 top-3.5 text-slate-500"></i>
-                <input type="text" id="search-items" onkeyup="filterItems()" placeholder="Пошук за назвою або номенклатурним номером..."
-                    class="w-full bg-slate-900/80 text-sm text-slate-200 pl-10 pr-4 py-2.5 rounded-xl border border-slate-700/60 focus:outline-none focus:border-blue-500 transition">
+        <div class="glass rounded-2xl p-4 mb-6 space-y-3">
+            <div class="flex flex-col sm:flex-row items-center justify-between gap-4">
+                <div class="relative w-full sm:w-96">
+                    <i class="fa-solid fa-magnifying-glass absolute left-3.5 top-3.5 text-slate-500"></i>
+                    <input type="text" id="search-items" onkeyup="filterItems()" placeholder="Пошук за назвою або номенклатурним номером..."
+                        class="w-full bg-slate-900/80 text-sm text-slate-200 pl-10 pr-4 py-2.5 rounded-xl border border-slate-700/60 focus:outline-none focus:border-blue-500 transition">
+                </div>
+                <div class="text-xs text-slate-400">
+                    Показано: <span id="visible-items" class="font-bold text-slate-200">0</span>
+                </div>
             </div>
-            <div class="text-xs text-slate-400">
-                Показано: <span id="visible-items" class="font-bold text-slate-200">0</span>
+            <div class="flex items-center gap-2 flex-wrap">
+                <span class="text-xs text-slate-500 mr-0.5"><i class="fa-solid fa-filter"></i></span>
+                <button onclick="setFilter('negative')" id="filter-negative" class="px-2.5 py-1 text-xs font-medium rounded-lg border border-slate-700/60 text-slate-400 bg-slate-900/50 hover:bg-slate-800/80 transition flex items-center gap-1.5">
+                    <i class="fa-solid fa-arrow-trend-down"></i> Від'ємний залишок
+                    <span id="filter-negative-count" class="px-1.5 py-0.5 bg-slate-800 rounded text-[10px] min-w-[20px] text-center">0</span>
+                </button>
+                <button onclick="setFilter('no-docs')" id="filter-no-docs" class="px-2.5 py-1 text-xs font-medium rounded-lg border border-slate-700/60 text-slate-400 bg-slate-900/50 hover:bg-slate-800/80 transition flex items-center gap-1.5">
+                    <i class="fa-solid fa-file-circle-xmark"></i> Без документу
+                    <span id="filter-no-docs-count" class="px-1.5 py-0.5 bg-slate-800 rounded text-[10px] min-w-[20px] text-center">0</span>
+                </button>
+                <button onclick="setFilter('dup-names')" id="filter-dup-names" class="px-2.5 py-1 text-xs font-medium rounded-lg border border-slate-700/60 text-slate-400 bg-slate-900/50 hover:bg-slate-800/80 transition flex items-center gap-1.5">
+                    <i class="fa-solid fa-clone"></i> Однакові назви
+                    <span id="filter-dup-names-count" class="px-1.5 py-0.5 bg-slate-800 rounded text-[10px] min-w-[20px] text-center">0</span>
+                </button>
+                <button onclick="setFilter('zeros')" id="filter-zeros" class="px-2.5 py-1 text-xs font-medium rounded-lg border border-slate-700/60 text-slate-400 bg-slate-900/50 hover:bg-slate-800/80 transition flex items-center gap-1.5">
+                    <i class="fa-solid fa-circle-dot"></i> Скрізь нулі
+                    <span id="filter-zeros-count" class="px-1.5 py-0.5 bg-slate-800 rounded text-[10px] min-w-[20px] text-center">0</span>
+                </button>
             </div>
         </div>
 
@@ -150,6 +180,77 @@ HTML_PAGE = r"""<!DOCTYPE html>
         </div>
     </main>
 
+    <!-- Log Tab -->
+    <main id="panel-logs" class="max-w-7xl mx-auto px-6 hidden">
+        <div class="rounded-2xl border border-slate-800/80 bg-[#090d16] shadow-2xl overflow-hidden flex flex-col">
+            <!-- Terminal Header -->
+            <div class="px-4 py-3 bg-[#0d1322] border-b border-slate-800 flex flex-wrap items-center justify-between gap-3 select-none">
+                <!-- Left: macOS Window Controls & Title -->
+                <div class="flex items-center space-x-2">
+                    <div class="flex items-center space-x-1.5">
+                        <span class="w-3 h-3 rounded-full bg-[#ff5f56] inline-block shadow-sm"></span>
+                        <span class="w-3 h-3 rounded-full bg-[#ffbd2e] inline-block shadow-sm"></span>
+                        <span class="w-3 h-3 rounded-full bg-[#27c93f] inline-block shadow-sm"></span>
+                    </div>
+                    <span class="font-mono text-xs font-semibold text-emerald-400/90 ml-2">~/logs</span>
+                </div>
+
+                <!-- Center: Grep Search Input -->
+                <div class="relative flex-1 min-w-[180px] max-w-md mx-1">
+                    <i class="fa-solid fa-magnifying-glass absolute left-3 top-2.5 text-slate-500 text-xs"></i>
+                    <input type="text" id="log-search-input" oninput="onLogFilterChange()" placeholder="grep logs..."
+                        class="w-full bg-[#070b14] text-xs text-slate-200 pl-8 pr-3 py-1.5 rounded-lg border border-slate-700/60 focus:outline-none focus:border-sky-500 font-mono transition">
+                </div>
+
+                <!-- Log Level Badges / Filters -->
+                <div class="flex items-center gap-1.5 flex-wrap">
+                    <label class="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold font-mono cursor-pointer transition select-none bg-sky-500/10 text-sky-400 border border-sky-500/30 hover:bg-sky-500/20">
+                        <input type="checkbox" id="lvl-info" checked onchange="onLogFilterChange()" class="rounded border-sky-400 text-sky-500 focus:ring-0 w-3.5 h-3.5 accent-sky-500">
+                        <span>INFO</span>
+                    </label>
+                    <label class="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold font-mono cursor-pointer transition select-none bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/20">
+                        <input type="checkbox" id="lvl-success" checked onchange="onLogFilterChange()" class="rounded border-emerald-400 text-emerald-500 focus:ring-0 w-3.5 h-3.5 accent-emerald-500">
+                        <span>SUCCESS</span>
+                    </label>
+                    <label class="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold font-mono cursor-pointer transition select-none bg-amber-500/10 text-amber-400 border border-amber-500/30 hover:bg-amber-500/20">
+                        <input type="checkbox" id="lvl-warn" checked onchange="onLogFilterChange()" class="rounded border-amber-400 text-amber-500 focus:ring-0 w-3.5 h-3.5 accent-amber-500">
+                        <span>WARN</span>
+                    </label>
+                    <label class="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold font-mono cursor-pointer transition select-none bg-rose-500/10 text-rose-400 border border-rose-500/30 hover:bg-rose-500/20">
+                        <input type="checkbox" id="lvl-err" checked onchange="onLogFilterChange()" class="rounded border-rose-400 text-rose-500 focus:ring-0 w-3.5 h-3.5 accent-rose-500">
+                        <span>ERR</span>
+                    </label>
+                </div>
+
+                <!-- Right Controls: Ratio, Auto-Scroll, Clear -->
+                <div class="flex items-center space-x-3">
+                    <span id="log-count-ratio" class="font-mono text-xs text-sky-400/90 font-medium px-2 py-0.5 bg-[#070b14] rounded border border-slate-800">0/0</span>
+                    <label class="flex items-center gap-1.5 cursor-pointer select-none text-[11px] font-bold tracking-wider text-slate-400 hover:text-slate-300">
+                        <span>AUTO-SCROLL</span>
+                        <div class="relative">
+                            <input type="checkbox" id="log-autoscroll" checked class="sr-only peer" onchange="toggleAutoScroll()">
+                            <div class="w-8 h-4 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-emerald-500"></div>
+                        </div>
+                    </label>
+                    <button onclick="clearLogsServer()" class="p-1.5 text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition" title="Очистити логи">
+                        <i class="fa-solid fa-trash-can text-sm"></i>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Terminal Body -->
+            <div id="log-terminal" class="p-4 bg-[#060911] h-[600px] max-h-[75vh] overflow-y-auto font-mono text-[12px] leading-relaxed text-slate-300 space-y-0.5 select-text scroll-smooth border-t border-slate-900">
+                <div id="log-lines" class="space-y-0.5"></div>
+                <div id="log-empty-state" class="text-slate-600 italic py-6 text-center select-none">
+                    [System] Очікування подій та повідомлень консолі...
+                </div>
+                <div id="log-cursor" class="text-emerald-400 font-mono text-xs pt-1 flex items-center gap-1 select-none">
+                    <span class="text-slate-600">$</span> <span class="cursor-blink">▌</span>
+                </div>
+            </div>
+        </div>
+    </main>
+
     <!-- Delete Confirmation Modal -->
     <div id="delete-modal" class="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm hidden flex items-center justify-center p-4">
         <div class="glass w-full max-w-md rounded-2xl p-6 border border-red-500/30 shadow-2xl text-center space-y-4">
@@ -172,34 +273,88 @@ HTML_PAGE = r"""<!DOCTYPE html>
         </div>
     </div>
 
-    <!-- Image Viewer Modal -->
+    <!-- Image Viewer Modal with Side-by-Side OCR Preview -->
     <div id="img-modal" class="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur-md hidden flex items-center justify-center p-4">
-        <div class="glass w-full max-w-4xl max-h-[90vh] rounded-2xl flex flex-col border border-slate-700 shadow-2xl overflow-hidden">
-            <div class="px-6 py-4 border-b border-slate-800 flex items-center justify-between">
+        <div class="glass w-full max-w-7xl max-h-[92vh] rounded-2xl flex flex-col border border-slate-700 shadow-2xl overflow-hidden">
+            <div class="px-6 py-3 border-b border-slate-800 flex items-center justify-between">
                 <h3 id="img-modal-title" class="font-semibold text-lg text-slate-100 flex items-center gap-2">
                     <i class="fa-solid fa-image text-emerald-400"></i>
                     <span>Перегляд</span>
                 </h3>
                 <div class="flex items-center gap-2">
                     <div class="flex items-center bg-slate-800 rounded-lg border border-slate-700">
-                        <button onclick="zoomImgOut()" class="px-2.5 py-1.5 text-slate-400 hover:text-white transition" title="Зменшити (Ctrl+Scroll)">
+                        <button id="img-zoom-out-btn" onclick="zoomImgOut()" class="px-2.5 py-1.5 text-slate-400 hover:text-white transition disabled:opacity-30 disabled:cursor-not-allowed" title="Зменшити (Ctrl+Scroll)">
                             <i class="fa-solid fa-minus text-xs"></i>
                         </button>
-                        <span id="img-zoom-label" class="px-2 py-1 text-xs text-slate-300 min-w-[52px] text-center select-none">Вписати</span>
-                        <button onclick="zoomImgIn()" class="px-2.5 py-1.5 text-slate-400 hover:text-white transition" title="Збільшити (Ctrl+Scroll)">
+                        <span id="img-zoom-label" class="px-2 py-1 text-xs text-slate-300 min-w-[56px] text-center select-none font-mono">100%</span>
+                        <button id="img-zoom-in-btn" onclick="zoomImgIn()" class="px-2.5 py-1.5 text-slate-400 hover:text-white transition disabled:opacity-30 disabled:cursor-not-allowed" title="Збільшити (Ctrl+Scroll)">
                             <i class="fa-solid fa-plus text-xs"></i>
                         </button>
                     </div>
-                    <button onclick="resetImgZoom()" class="px-2.5 py-1.5 text-slate-400 hover:text-white bg-slate-800 rounded-lg border border-slate-700 transition text-xs" title="Вписати у вікно">
+                    <button onclick="resetImgZoom()" class="px-2.5 py-1.5 text-slate-400 hover:text-white bg-slate-800 rounded-lg border border-slate-700 transition text-xs" title="Скинути масштаб (100%)">
                         <i class="fa-solid fa-expand"></i>
+                    </button>
+                    <button id="toggle-ocr-btn" onclick="toggleOcrPanel()" class="px-3 py-1.5 text-xs font-medium rounded-lg bg-blue-600/20 text-blue-400 border border-blue-500/30 hover:bg-blue-600/30 transition flex items-center gap-1.5" title="Показати/приховати текст OCR">
+                        <i class="fa-solid fa-align-left"></i>
+                        <span id="toggle-ocr-label">Текст OCR</span>
                     </button>
                     <button onclick="closeImgModal()" class="text-slate-400 hover:text-white p-1 rounded-lg">
                         <i class="fa-solid fa-xmark text-lg"></i>
                     </button>
                 </div>
             </div>
-            <div id="img-modal-container" class="p-4 flex-1 overflow-auto flex items-center justify-center bg-slate-950/50">
-                <img id="img-modal-src" src="" alt="Документ" class="max-h-[70vh] max-w-full object-contain rounded-xl shadow-2xl" draggable="false">
+            <div class="flex-1 flex overflow-hidden min-h-[420px]">
+                <!-- Left: Image Canvas -->
+                <div id="img-modal-container" class="flex-1 overflow-auto flex bg-slate-950/70 relative p-4 min-w-0">
+                    <img id="img-modal-src" src="" alt="Документ" class="rounded-xl shadow-2xl m-auto shrink-0 select-none" draggable="false">
+                </div>
+                <!-- Right: OCR / Recognized Content Panel -->
+                <div id="ocr-panel" class="w-[440px] max-w-[45vw] border-l border-slate-800 bg-slate-900/95 flex flex-col overflow-hidden">
+                    <div class="p-3.5 border-b border-slate-800 flex items-center justify-between">
+                        <div class="flex items-center gap-2">
+                            <span class="text-xs font-semibold uppercase tracking-wider text-slate-400">Розпізнано</span>
+                            <span id="ocr-doc-type-badge"></span>
+                        </div>
+                        <button onclick="copyOcrText()" class="text-xs text-slate-400 hover:text-slate-200 px-2.5 py-1 bg-slate-800 hover:bg-slate-700 rounded-lg transition flex items-center gap-1">
+                            <i class="fa-solid fa-copy"></i>
+                            <span id="copy-text-label">Копіювати</span>
+                        </button>
+                    </div>
+                    <div class="flex-1 overflow-y-auto p-4 space-y-4 text-xs">
+                        <!-- Metadata summary -->
+                        <div id="ocr-meta-box" class="glass rounded-xl p-3 space-y-2 border border-slate-800">
+                            <div class="flex justify-between text-slate-300">
+                                <span class="text-slate-500">Номер:</span>
+                                <span id="ocr-meta-num" class="font-mono font-bold text-slate-200">—</span>
+                            </div>
+                            <div class="flex justify-between text-slate-300">
+                                <span class="text-slate-500">Дата:</span>
+                                <span id="ocr-meta-date" class="text-slate-200">—</span>
+                            </div>
+                            <div class="flex justify-between text-slate-300">
+                                <span class="text-slate-500">Тип операції:</span>
+                                <span id="ocr-meta-op" class="font-medium text-slate-200">—</span>
+                            </div>
+                        </div>
+
+                        <!-- Impact / Items table if present -->
+                        <div id="ocr-items-box" class="glass rounded-xl p-3 border border-slate-800 hidden">
+                            <div class="text-slate-400 font-semibold mb-2 flex items-center justify-between">
+                                <span>Позиції в документі</span>
+                                <span id="ocr-items-count" class="text-[10px] bg-slate-800 px-1.5 py-0.5 rounded text-blue-400">0</span>
+                            </div>
+                            <div id="ocr-items-list" class="space-y-1.5 max-h-48 overflow-y-auto pr-1"></div>
+                        </div>
+
+                        <!-- Full OCR raw text -->
+                        <div>
+                            <div class="text-slate-400 font-semibold mb-2 flex items-center justify-between">
+                                <span>Повний розпізнаний текст:</span>
+                            </div>
+                            <pre id="ocr-raw-text" class="bg-slate-950/80 p-3 rounded-xl border border-slate-800/80 text-slate-300 font-mono text-[11px] whitespace-pre-wrap break-words leading-relaxed max-h-[340px] overflow-y-auto select-text"></pre>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -244,23 +399,81 @@ HTML_PAGE = r"""<!DOCTYPE html>
         </div>
     </div>
 
+    <!-- Edit Item Field Modal -->
+    <div id="edit-modal" class="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm hidden flex items-center justify-center p-4">
+        <div class="glass w-full max-w-md rounded-2xl p-6 border border-blue-500/30 shadow-2xl space-y-4">
+            <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+                <h3 class="text-base font-bold text-slate-100 flex items-center gap-2">
+                    <i class="fa-solid fa-pen-to-square text-blue-400"></i>
+                    <span id="edit-modal-title">Редагування поля</span>
+                </h3>
+                <button onclick="closeEditModal()" class="text-slate-400 hover:text-white p-1 rounded-lg">
+                    <i class="fa-solid fa-xmark text-lg"></i>
+                </button>
+            </div>
+            <div class="space-y-3 text-sm">
+                <div>
+                    <label class="block text-xs font-semibold text-slate-400 mb-1">Поточне значення:</label>
+                    <div id="edit-current-value" class="p-2.5 bg-slate-900/90 rounded-xl border border-slate-800 text-slate-300 font-mono text-xs break-all select-all min-h-[38px] flex items-center"></div>
+                </div>
+                <div>
+                    <label id="edit-field-label" class="block text-xs font-semibold text-slate-300 mb-1">Нове значення:</label>
+                    <input type="text" id="edit-new-value" class="w-full bg-slate-900 text-slate-100 p-2.5 rounded-xl border border-slate-700 focus:outline-none focus:border-blue-500 text-sm transition" placeholder="Введіть нове значення...">
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold text-slate-400 mb-1">Коментар / причина зміни (необов'язково):</label>
+                    <input type="text" id="edit-comment" class="w-full bg-slate-900 text-slate-100 p-2.5 rounded-xl border border-slate-700 focus:outline-none focus:border-blue-500 text-sm transition" placeholder="Наприклад: Виправлення помилки OCR">
+                </div>
+                <div id="edit-error" class="text-xs text-rose-400 hidden"></div>
+            </div>
+            <div class="flex items-center justify-end space-x-3 pt-2">
+                <button onclick="closeEditModal()" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-medium rounded-xl transition">
+                    Скасувати (Esc)
+                </button>
+                <button id="edit-save-btn" onclick="submitEditField()" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium rounded-xl transition shadow-lg shadow-blue-600/30 flex items-center gap-2">
+                    <i class="fa-solid fa-check"></i> <span>Зберегти</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
 <script>
 let allItems = [];
 let allDocs = [];
+let currentViewingDocId = null;
+let activeFilter = '';
 
 function switchTab(tab) {
     const wh = document.getElementById('panel-warehouse');
     const dc = document.getElementById('panel-documents');
+    const lg = document.getElementById('panel-logs');
     const tw = document.getElementById('tab-warehouse');
     const td = document.getElementById('tab-documents');
+    const tl = document.getElementById('tab-logs');
+
+    wh.classList.add('hidden');
+    dc.classList.add('hidden');
+    lg.classList.add('hidden');
+
+    tw.className = tw.className.replace('tab-active', 'tab-inactive');
+    td.className = td.className.replace('tab-active', 'tab-inactive');
+    tl.className = tl.className.replace('tab-active', 'tab-inactive');
+
     if (tab === 'warehouse') {
-        wh.classList.remove('hidden'); dc.classList.add('hidden');
+        wh.classList.remove('hidden');
         tw.className = tw.className.replace('tab-inactive', 'tab-active');
-        td.className = td.className.replace('tab-active', 'tab-inactive');
-    } else {
-        dc.classList.remove('hidden'); wh.classList.add('hidden');
+    } else if (tab === 'documents') {
+        dc.classList.remove('hidden');
         td.className = td.className.replace('tab-inactive', 'tab-active');
-        tw.className = tw.className.replace('tab-active', 'tab-inactive');
+    } else if (tab === 'logs') {
+        lg.classList.remove('hidden');
+        tl.className = tl.className.replace('tab-inactive', 'tab-active');
+        if (allLogs.length === 0) {
+            fetchLogs();
+        }
+        if (autoScroll) {
+            scrollLogsToBottom();
+        }
     }
 }
 
@@ -275,7 +488,8 @@ async function fetchItems() {
         const res = await fetch('/api/warehouse/items');
         allItems = await res.json();
         document.getElementById('items-count').innerText = allItems.length;
-        renderItems(allItems);
+        updateFilterCounts();
+        filterItems();
     } catch(e) {
         console.error(e);
     }
@@ -293,16 +507,58 @@ function renderItems(items) {
         const bal = it.balance || 0;
         const balClass = bal > 0 ? 'text-blue-400' : (bal < 0 ? 'text-red-400' : 'text-slate-500');
         html += `
-        <tr class="hover:bg-slate-800/40 transition cursor-pointer" onclick="toggleTransactions(${it.id})">
+        <tr class="hover:bg-slate-800/40 transition cursor-pointer group" onclick="toggleTransactions(${it.id})">
             <td class="py-4 px-3"><i id="chevron-${it.id}" class="fa-solid fa-chevron-right text-[10px] text-slate-500 transition-transform"></i></td>
-            <td class="py-4 px-3 font-mono text-xs text-slate-400">${esc(it.sku)}</td>
-            <td class="py-4 px-3 font-medium text-slate-200">${esc(it.name)}</td>
+            <td class="py-4 px-3 font-mono text-xs text-slate-400">
+                <div class="flex items-center justify-between gap-1">
+                    <span id="item-sku-${it.id}">${esc(it.sku)}</span>
+                    <button onclick="event.stopPropagation(); openEditModal(${it.id}, 'sku', '${esc(it.sku)}', 'Номенклатурний номер (SKU)')" class="text-slate-500 hover:text-blue-400 p-1 rounded transition opacity-0 hover:opacity-100 group-hover:opacity-100" title="Редагувати номенклатурний номер">
+                        <i class="fa-solid fa-pencil text-[10px]"></i>
+                    </button>
+                </div>
+            </td>
+            <td class="py-4 px-3 font-medium text-slate-200">
+                <div class="flex items-center justify-between gap-1">
+                    <span id="item-name-${it.id}">${esc(it.name)}</span>
+                    <button onclick="event.stopPropagation(); openEditModal(${it.id}, 'name', '${esc(it.name)}', 'Найменування')" class="text-slate-500 hover:text-blue-400 p-1 rounded transition opacity-0 hover:opacity-100 group-hover:opacity-100" title="Редагувати найменування">
+                        <i class="fa-solid fa-pencil text-[10px]"></i>
+                    </button>
+                </div>
+            </td>
             <td class="py-4 px-3 text-emerald-400 font-medium">${fmtNum(it.total_income)}</td>
             <td class="py-4 px-3 text-rose-400 font-medium">${fmtNum(it.total_expense)}</td>
-            <td class="py-4 px-3 ${balClass} font-bold">${fmtNum(bal)}</td>
-            <td class="py-4 px-3 text-slate-400">${esc(it.unit)}</td>
-            <td class="py-4 px-3 text-slate-300">${esc(it.supplier)}</td>
-            <td class="py-4 px-3 text-xs text-slate-400 max-w-[150px] truncate" title="${esc(it.notes)}">${esc(it.notes)}</td>
+            <td class="py-4 px-3 ${balClass} font-bold">
+                <div class="flex items-center justify-between gap-1">
+                    <span id="item-balance-${it.id}">${fmtNum(bal)}</span>
+                    <button onclick="event.stopPropagation(); openEditModal(${it.id}, 'balance', '${bal}', 'Залишок (кількість)')" class="text-slate-500 hover:text-blue-400 p-1 rounded transition opacity-0 hover:opacity-100 group-hover:opacity-100" title="Редагувати залишок">
+                        <i class="fa-solid fa-pencil text-[10px]"></i>
+                    </button>
+                </div>
+            </td>
+            <td class="py-4 px-3 text-slate-400">
+                <div class="flex items-center justify-between gap-1">
+                    <span id="item-unit-${it.id}">${esc(it.unit)}</span>
+                    <button onclick="event.stopPropagation(); openEditModal(${it.id}, 'unit', '${esc(it.unit)}', 'Одиниця виміру')" class="text-slate-500 hover:text-blue-400 p-1 rounded transition opacity-0 hover:opacity-100 group-hover:opacity-100" title="Редагувати одиницю виміру">
+                        <i class="fa-solid fa-pencil text-[10px]"></i>
+                    </button>
+                </div>
+            </td>
+            <td class="py-4 px-3 text-slate-300">
+                <div class="flex items-center justify-between gap-1">
+                    <span id="item-supplier-${it.id}">${esc(it.supplier)}</span>
+                    <button onclick="event.stopPropagation(); openEditModal(${it.id}, 'supplier', '${esc(it.supplier)}', 'Постачальник')" class="text-slate-500 hover:text-blue-400 p-1 rounded transition opacity-0 hover:opacity-100 group-hover:opacity-100" title="Редагувати постачальника">
+                        <i class="fa-solid fa-pencil text-[10px]"></i>
+                    </button>
+                </div>
+            </td>
+            <td class="py-4 px-3 text-xs text-slate-400">
+                <div class="flex items-center justify-between gap-1 max-w-[170px]">
+                    <span id="item-notes-${it.id}" class="truncate" title="${esc(it.notes)}">${esc(it.notes)}</span>
+                    <button onclick="event.stopPropagation(); openEditModal(${it.id}, 'notes', '${esc(it.notes)}', 'Примітки')" class="text-slate-500 hover:text-blue-400 p-1 rounded transition opacity-0 hover:opacity-100 group-hover:opacity-100 shrink-0" title="Редагувати примітки">
+                        <i class="fa-solid fa-pencil text-[10px]"></i>
+                    </button>
+                </div>
+            </td>
         </tr>
         <tr id="tx-row-${it.id}" class="hidden">
             <td colspan="9" class="p-0">
@@ -313,6 +569,210 @@ function renderItems(items) {
         </tr>`;
     });
     tbody.innerHTML = html;
+}
+
+// ---- Item Edit Modal Logic ----
+
+let currentEditItemId = null;
+let currentEditField = null;
+
+function openEditModal(itemId, field, currentVal, fieldLabel) {
+    currentEditItemId = itemId;
+    currentEditField = field;
+    const isQty = (field === 'balance' || field === 'quantity');
+    document.getElementById('edit-modal-title').textContent = isQty ? 'Коригування залишку' : ('Редагувати: ' + (fieldLabel || field));
+    document.getElementById('edit-field-label').textContent = isQty ? 'Новий залишок (цільова кількість):' : ('Нове значення (' + (fieldLabel || field) + '):');
+    document.getElementById('edit-current-value').textContent = (currentVal !== '' && currentVal !== null && currentVal !== undefined) ? currentVal : '(порожньо)';
+    const inputVal = document.getElementById('edit-new-value');
+    if (isQty) {
+        inputVal.type = 'number';
+        inputVal.step = 'any';
+        inputVal.placeholder = 'Введіть новий залишок...';
+    } else {
+        inputVal.type = 'text';
+        inputVal.removeAttribute('step');
+        inputVal.placeholder = 'Введіть нове значення...';
+    }
+    inputVal.value = (currentVal !== null && currentVal !== undefined) ? currentVal : '';
+    document.getElementById('edit-comment').value = '';
+    const errEl = document.getElementById('edit-error');
+    errEl.classList.add('hidden');
+    errEl.textContent = '';
+    document.getElementById('edit-modal').classList.remove('hidden');
+    setTimeout(() => { inputVal.focus(); inputVal.select(); }, 50);
+}
+
+function closeEditModal() {
+    currentEditItemId = null;
+    currentEditField = null;
+    document.getElementById('edit-modal').classList.add('hidden');
+}
+
+async function submitEditField() {
+    if (!currentEditItemId || !currentEditField) return;
+    const saveBtn = document.getElementById('edit-save-btn');
+    const errEl = document.getElementById('edit-error');
+    const newVal = document.getElementById('edit-new-value').value;
+    const comment = document.getElementById('edit-comment').value;
+
+    errEl.classList.add('hidden');
+    saveBtn.disabled = true;
+    saveBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> <span>Збереження...</span>';
+
+    try {
+        const res = await fetch('/api/warehouse/items/' + currentEditItemId + '/edit', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                field: currentEditField,
+                value: newVal,
+                comment: comment
+            })
+        });
+        const data = await res.json();
+        if (!res.ok || data.error) {
+            errEl.textContent = data.error || 'Помилка збереження';
+            errEl.classList.remove('hidden');
+            saveBtn.disabled = false;
+            saveBtn.innerHTML = '<i class="fa-solid fa-check"></i> <span>Зберегти</span>';
+            return;
+        }
+
+        // Update local item cache
+        const itemIdx = allItems.findIndex(it => it.id === currentEditItemId);
+        if (itemIdx !== -1) {
+            if (data.item) {
+                allItems[itemIdx] = { ...allItems[itemIdx], ...data.item };
+            }
+            if (data.target_quantity !== undefined) {
+                allItems[itemIdx].balance = data.target_quantity;
+            }
+            if (data.operation_type === 'income' && data.delta) {
+                allItems[itemIdx].total_income = (allItems[itemIdx].total_income || 0) + data.delta;
+            } else if (data.operation_type === 'expense' && data.delta) {
+                allItems[itemIdx].total_expense = (allItems[itemIdx].total_expense || 0) + Math.abs(data.delta);
+            }
+        }
+
+        // Re-render filtered items immediately
+        filterItems();
+
+        // If transaction row is currently expanded, reload transactions
+        const txRow = document.getElementById('tx-row-' + currentEditItemId);
+        if (txRow && !txRow.classList.contains('hidden')) {
+            await reloadTransactions(currentEditItemId);
+        }
+
+        // If OCR preview modal is open, reload OCR items dynamically
+        const imgModal = document.getElementById('img-modal');
+        if (imgModal && !imgModal.classList.contains('hidden') && currentViewingDocId) {
+            await loadDocumentOcr(currentViewingDocId);
+        }
+
+        // Reload any currently expanded document impact views
+        const openImpactRows = document.querySelectorAll('[id^="doc-impact-row-"]:not(.hidden)');
+        for (const row of openImpactRows) {
+            const docId = parseInt(row.id.replace('doc-impact-row-', ''));
+            if (docId) {
+                await reloadDocImpact(docId);
+            }
+        }
+
+        closeEditModal();
+    } catch(e) {
+        errEl.textContent = 'Помилка: ' + e.message;
+        errEl.classList.remove('hidden');
+    } finally {
+        saveBtn.disabled = false;
+        saveBtn.innerHTML = '<i class="fa-solid fa-check"></i> <span>Зберегти</span>';
+    }
+}
+
+async function reloadTransactions(itemId) {
+    const content = document.getElementById('tx-content-' + itemId);
+    if (!content) return;
+    try {
+        const res = await fetch('/api/warehouse/items/' + itemId + '/transactions');
+        const txs = await res.json();
+        const it = allItems.find(x => x.id === itemId);
+        const curBal = it ? (it.balance || 0) : 0;
+        const curUnit = it ? (it.unit || '') : '';
+        const balColor = curBal > 0 ? 'text-blue-400' : (curBal < 0 ? 'text-red-400' : 'text-slate-400');
+
+        let headerBar = `<div class="flex items-center justify-between pb-2 mb-2 border-b border-slate-800/60">
+            <div class="text-xs text-slate-300 flex items-center gap-2">
+                <span class="text-slate-400">Поточний залишок:</span>
+                <span class="font-bold ${balColor}">${fmtNum(curBal)} ${esc(curUnit)}</span>
+            </div>
+        </div>`;
+
+        if (txs.length === 0) {
+            content.innerHTML = headerBar + '<p class="text-slate-500 py-2">Немає транзакцій.</p>';
+            return;
+        }
+        let h = headerBar + '<table class="w-full"><thead><tr class="text-slate-500 text-[11px] uppercase">' +
+            '<th class="py-1 pr-3 text-left">Дата</th><th class="py-1 pr-3 text-left">Тип</th>' +
+            '<th class="py-1 pr-3 text-left">Тип док.</th>' +
+            '<th class="py-1 pr-3 text-right">Кількість</th><th class="py-1 pr-3 text-left">№ накл.</th>' +
+            '<th class="py-1 pr-3 text-right">Залишок</th><th class="py-1 pr-3 text-left">Документ</th>' +
+            '<th class="py-1 pr-3 text-left">Джерело</th>' +
+            '</tr></thead><tbody>';
+        txs.forEach(tx => {
+            const isManual = tx.file_type === 'manual' || tx.doc_type === 'РУЧНЕ_КОРИГУВАННЯ';
+            const isInc = tx.operation_type === 'income';
+            let badge = isInc ? 'badge-income' : 'badge-expense';
+            let label = isInc ? 'Прихід' : 'Розхід';
+            if (isManual) {
+                badge = 'badge-vymoha';
+                label = 'Коригування';
+            }
+            const date = tx.doc_date || formatTs(tx.created_at);
+            const docType = tx.doc_type || '';
+            let docTypeBadge = '';
+            if (docType === 'НАКЛАДНА') {
+                docTypeBadge = '<span class="px-2 py-0.5 rounded-full text-[11px] font-medium badge-nakladna">Накл.</span>';
+            } else if (docType === 'ВИМОГА') {
+                docTypeBadge = '<span class="px-2 py-0.5 rounded-full text-[11px] font-medium badge-vymoha">Вимога</span>';
+            } else if (docType === 'РУЧНЕ_КОРИГУВАННЯ' || isManual) {
+                docTypeBadge = '<span class="px-2 py-0.5 rounded-full text-[11px] font-medium" style="background: rgba(245, 158, 11, 0.15); color: #fbbf24;">Коригування</span>';
+            } else if (docType) {
+                docTypeBadge = `<span class="text-slate-400 text-[11px]">${esc(docType)}</span>`;
+            }
+            const srcRow = tx.source_row || '';
+            let qtyDisplay = '';
+            if (tx.quantity === 0) {
+                qtyDisplay = '<span class="text-slate-400 font-medium">0</span>';
+            } else {
+                const sign = isInc ? '+' : '-';
+                const color = isInc ? 'text-emerald-400' : 'text-rose-400';
+                qtyDisplay = `<span class="${color} font-medium">${sign}${fmtNum(tx.quantity)}</span>`;
+            }
+            let docDisplay = '';
+            if (isManual) {
+                docDisplay = `<span class="text-amber-400/90 text-xs font-medium" title="Ручне редагування"><i class="fa-solid fa-user-pen mr-1"></i>${esc(tx.filename)}</span>`;
+            } else {
+                const fileIcon = getFileIcon(tx.file_type);
+                docDisplay = `<button onclick="event.stopPropagation(); viewDocument(${tx.document_id}, '${esc(tx.filename)}', '${tx.file_type}', '${esc(tx.source_row)}')"
+                    class="text-slate-400 hover:text-blue-400 transition" title="${esc(tx.filename)}">
+                    ${fileIcon} <span class="ml-1">${esc(tx.filename)}</span>
+                </button>`;
+            }
+            h += `<tr class="border-t border-slate-800/30">
+                <td class="py-2 pr-3 text-slate-300">${esc(date)}</td>
+                <td class="py-2 pr-3"><span class="px-2 py-0.5 rounded-full text-[11px] font-medium ${badge}" ${isManual ? 'style="background: rgba(245, 158, 11, 0.15); color: #fbbf24;"' : ''}>${label}</span></td>
+                <td class="py-2 pr-3">${docTypeBadge}</td>
+                <td class="py-2 pr-3 text-right font-medium">${qtyDisplay}</td>
+                <td class="py-2 pr-3 text-slate-300 font-mono">${esc(tx.doc_number)}</td>
+                <td class="py-2 pr-3 text-right text-blue-400 font-medium">${fmtNum(tx.running_balance)}</td>
+                <td class="py-2 pr-3">${docDisplay}</td>
+                <td class="py-2 pr-3 text-slate-500 text-[11px] max-w-[200px] truncate" title="${esc(srcRow)}">${esc(srcRow)}</td>
+            </tr>`;
+        });
+        h += '</tbody></table>';
+        content.innerHTML = h;
+    } catch(e) {
+        content.innerHTML = '<p class="text-red-400">Помилка завантаження транзакцій.</p>';
+    }
 }
 
 async function toggleTransactions(itemId) {
@@ -327,69 +787,88 @@ async function toggleTransactions(itemId) {
     chevron.style.transform = 'rotate(90deg)';
 
     const content = document.getElementById('tx-content-' + itemId);
-    try {
-        const res = await fetch('/api/warehouse/items/' + itemId + '/transactions');
-        const txs = await res.json();
-        if (txs.length === 0) {
-            content.innerHTML = '<p class="text-slate-500 py-2">Немає транзакцій.</p>';
-            return;
-        }
-        let h = '<table class="w-full"><thead><tr class="text-slate-500 text-[11px] uppercase">' +
-            '<th class="py-1 pr-3 text-left">Дата</th><th class="py-1 pr-3 text-left">Тип</th>' +
-            '<th class="py-1 pr-3 text-left">Тип док.</th>' +
-            '<th class="py-1 pr-3 text-right">Кількість</th><th class="py-1 pr-3 text-left">№ накл.</th>' +
-            '<th class="py-1 pr-3 text-right">Залишок</th><th class="py-1 pr-3 text-left">Документ</th>' +
-            '<th class="py-1 pr-3 text-left">Джерело</th>' +
-            '</tr></thead><tbody>';
-        txs.forEach(tx => {
-            const isInc = tx.operation_type === 'income';
-            const badge = isInc ? 'badge-income' : 'badge-expense';
-            const label = isInc ? 'Прихід' : 'Розхід';
-            const sign = isInc ? '+' : '-';
-            const date = tx.doc_date || formatTs(tx.created_at);
-            const fileIcon = getFileIcon(tx.file_type);
-            const docType = tx.doc_type || '';
-            let docTypeBadge = '';
-            if (docType === 'НАКЛАДНА') {
-                docTypeBadge = '<span class="px-2 py-0.5 rounded-full text-[11px] font-medium badge-nakladna">Накл.</span>';
-            } else if (docType === 'ВИМОГА') {
-                docTypeBadge = '<span class="px-2 py-0.5 rounded-full text-[11px] font-medium badge-vymoha">Вимога</span>';
-            } else if (docType) {
-                docTypeBadge = `<span class="text-slate-400 text-[11px]">${esc(docType)}</span>`;
-            }
-            const srcRow = tx.source_row || '';
-            h += `<tr class="border-t border-slate-800/30">
-                <td class="py-2 pr-3 text-slate-300">${esc(date)}</td>
-                <td class="py-2 pr-3"><span class="px-2 py-0.5 rounded-full text-[11px] font-medium ${badge}">${label}</span></td>
-                <td class="py-2 pr-3">${docTypeBadge}</td>
-                <td class="py-2 pr-3 text-right font-medium ${isInc ? 'text-emerald-400' : 'text-rose-400'}">${sign}${fmtNum(tx.quantity)}</td>
-                <td class="py-2 pr-3 text-slate-300 font-mono">${esc(tx.doc_number)}</td>
-                <td class="py-2 pr-3 text-right text-blue-400 font-medium">${fmtNum(tx.running_balance)}</td>
-                <td class="py-2 pr-3">
-                    <button onclick="event.stopPropagation(); viewDocument(${tx.document_id}, '${esc(tx.filename)}', '${tx.file_type}', '${esc(tx.source_row)}')"
-                        class="text-slate-400 hover:text-blue-400 transition" title="${esc(tx.filename)}">
-                        ${fileIcon} <span class="ml-1">${esc(tx.filename)}</span>
-                    </button>
-                </td>
-                <td class="py-2 pr-3 text-slate-500 text-[11px] max-w-[200px] truncate" title="${esc(srcRow)}">${esc(srcRow)}</td>
-            </tr>`;
-        });
-        h += '</tbody></table>';
-        content.innerHTML = h;
-    } catch(e) {
-        content.innerHTML = '<p class="text-red-400">Помилка завантаження транзакцій.</p>';
-    }
+    content.innerHTML = '<div class="py-2 text-slate-500"><i class="fa-solid fa-spinner fa-spin mr-1.5"></i>Завантаження...</div>';
+    await reloadTransactions(itemId);
 }
 
 function filterItems() {
     const q = document.getElementById('search-items').value.toLowerCase().trim();
-    if (!q) { renderItems(allItems); return; }
-    const filtered = allItems.filter(it =>
-        (it.name || '').toLowerCase().includes(q) ||
-        (it.sku || '').toLowerCase().includes(q) ||
-        (it.supplier || '').toLowerCase().includes(q)
-    );
+    let filtered = allItems;
+
+    if (activeFilter === 'negative') {
+        filtered = filtered.filter(it => (it.balance || 0) < 0);
+    } else if (activeFilter === 'no-docs') {
+        filtered = filtered.filter(it => (it.doc_count || 0) === 0);
+    } else if (activeFilter === 'dup-names') {
+        const dupNames = getDuplicateNames();
+        filtered = filtered.filter(it => dupNames.has((it.name || '').trim().toLowerCase()));
+    } else if (activeFilter === 'zeros') {
+        filtered = filtered.filter(it => (it.total_income || 0) === 0 && (it.total_expense || 0) === 0 && (it.balance || 0) === 0);
+    }
+
+    if (q) {
+        filtered = filtered.filter(it =>
+            (it.name || '').toLowerCase().includes(q) ||
+            (it.sku || '').toLowerCase().includes(q) ||
+            (it.supplier || '').toLowerCase().includes(q) ||
+            (it.notes || '').toLowerCase().includes(q) ||
+            (it.unit || '').toLowerCase().includes(q)
+        );
+    }
     renderItems(filtered);
+}
+
+function getDuplicateNames() {
+    const nameSkus = {};
+    allItems.forEach(it => {
+        const name = (it.name || '').trim().toLowerCase();
+        if (!name) return;
+        if (!nameSkus[name]) nameSkus[name] = new Set();
+        nameSkus[name].add((it.sku || '').trim());
+    });
+    const dupNames = new Set();
+    Object.keys(nameSkus).forEach(name => {
+        if (nameSkus[name].size > 1) dupNames.add(name);
+    });
+    return dupNames;
+}
+
+function setFilter(filter) {
+    activeFilter = (activeFilter === filter) ? '' : filter;
+    updateFilterUI();
+    filterItems();
+}
+
+function updateFilterUI() {
+    ['negative', 'no-docs', 'dup-names', 'zeros'].forEach(f => {
+        const btn = document.getElementById('filter-' + f);
+        if (!btn) return;
+        if (f === activeFilter) {
+            btn.classList.add('bg-blue-600/30', 'text-blue-300', 'border-blue-500/50');
+            btn.classList.remove('text-slate-400', 'border-slate-700/60', 'bg-slate-900/50');
+        } else {
+            btn.classList.remove('bg-blue-600/30', 'text-blue-300', 'border-blue-500/50');
+            btn.classList.add('text-slate-400', 'border-slate-700/60', 'bg-slate-900/50');
+        }
+    });
+}
+
+function updateFilterCounts() {
+    const negCount = allItems.filter(it => (it.balance || 0) < 0).length;
+    document.getElementById('filter-negative-count').textContent = negCount;
+
+    const noDocCount = allItems.filter(it => (it.doc_count || 0) === 0).length;
+    document.getElementById('filter-no-docs-count').textContent = noDocCount;
+
+    const dupNames = getDuplicateNames();
+    let dupCount = 0;
+    allItems.forEach(it => {
+        if (dupNames.has((it.name || '').trim().toLowerCase())) dupCount++;
+    });
+    document.getElementById('filter-dup-names-count').textContent = dupCount;
+
+    const zeroCount = allItems.filter(it => (it.total_income || 0) === 0 && (it.total_expense || 0) === 0 && (it.balance || 0) === 0).length;
+    document.getElementById('filter-zeros-count').textContent = zeroCount;
 }
 
 // ---- Documents ----
@@ -427,14 +906,25 @@ function renderDocs(docs) {
         } else {
             docTypeBadge = '<span class="text-slate-600 text-xs">—</span>';
         }
+        let previewBtn = '';
+        if (doc.file_type === 'excel') {
+            previewBtn = `<button onclick="event.stopPropagation(); viewDocument(${doc.id}, '${esc(doc.filename)}', '${doc.file_type}')" class="w-10 h-10 flex items-center justify-center rounded-lg bg-green-500/10 text-green-500 hover:bg-green-500/20 border border-green-500/20 transition" title="Перегляд Excel">
+                <i class="fa-solid fa-file-excel text-xl"></i>
+            </button>`;
+        } else if (doc.file_type === 'pdf') {
+            previewBtn = `<button onclick="event.stopPropagation(); viewDocument(${doc.id}, '${esc(doc.filename)}', '${doc.file_type}')" class="w-10 h-10 flex items-center justify-center rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20 border border-red-500/20 transition" title="Перегляд PDF">
+                <i class="fa-solid fa-file-pdf text-xl"></i>
+            </button>`;
+        } else {
+            previewBtn = `<button onclick="event.stopPropagation(); viewDocument(${doc.id}, '${esc(doc.filename)}', '${doc.file_type}')" class="group relative block w-10 h-10 rounded-lg overflow-hidden border border-slate-700 bg-slate-900 hover:border-blue-500 transition shadow" title="Переглянути фото та текст OCR">
+                <img src="/api/warehouse/documents/${doc.id}/view" alt="Превʼю" class="w-full h-full object-cover group-hover:scale-110 transition duration-200" onerror="this.outerHTML='<div class=\\'w-full h-full flex items-center justify-center text-emerald-400\\'><i class=\\'fa-solid fa-image text-lg\\'></i></div>'">
+            </button>`;
+        }
+
         html += `
         <tr class="hover:bg-slate-800/40 transition cursor-pointer" onclick="toggleDocImpact(${doc.id})">
             <td class="py-4 px-3"><i id="doc-chevron-${doc.id}" class="fa-solid fa-chevron-right text-[10px] text-slate-500 transition-transform"></i></td>
-            <td class="py-4 px-3">
-                <button onclick="event.stopPropagation(); viewDocument(${doc.id}, '${esc(doc.filename)}', '${doc.file_type}')" class="${doc.file_type === 'excel' ? 'text-green-500 hover:text-green-400' : 'text-emerald-400 hover:text-emerald-300'}">
-                    ${doc.file_type === 'excel' ? '<i class="fa-solid fa-file-excel text-2xl"></i>' : '<i class="fa-solid fa-image text-2xl"></i>'}
-                </button>
-            </td>
+            <td class="py-4 px-3">${previewBtn}</td>
             <td class="py-4 px-3 font-medium text-slate-200">${esc(doc.filename)}</td>
             <td class="py-4 px-3"><span class="px-2 py-0.5 rounded-full text-[11px] font-medium badge-import">${typeLabel}</span></td>
             <td class="py-4 px-3">${docTypeBadge}</td>
@@ -449,13 +939,190 @@ function renderDocs(docs) {
         </tr>
         <tr id="doc-impact-row-${doc.id}" class="hidden">
             <td colspan="9" class="p-0">
-                <div class="expand-row px-8 py-3 border-t border-slate-800/40">
+                <div class="expand-row px-8 py-4 border-t border-slate-800/40">
                     <div id="doc-impact-content-${doc.id}" class="text-xs text-slate-400">Завантаження...</div>
                 </div>
             </td>
         </tr>`;
     });
     tbody.innerHTML = html;
+}
+
+async function reloadDocImpact(docId) {
+    const content = document.getElementById('doc-impact-content-' + docId);
+    if (!content) return;
+
+    try {
+        const res = await fetch('/api/warehouse/documents/' + docId + '/ocr');
+        const data = await res.json();
+        if (data.error) {
+            content.innerHTML = '<p class="text-red-400 py-2">Помилка: ' + esc(data.error) + '</p>';
+            return;
+        }
+
+        const isPhoto = data.file_type === 'photo' || (data.filename && data.filename.match(/\.(jpg|jpeg|png|webp)$/i));
+        const rawText = data.raw_text || '';
+        const impacts = data.impact || [];
+
+        let h = '<div class="space-y-4">';
+
+        if (isPhoto) {
+            h += '<div class="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">';
+
+            // Left: Image Preview Card
+            h += '<div class="lg:col-span-4 glass rounded-xl p-3 border border-slate-800 flex flex-col items-center space-y-3 bg-slate-900/60">';
+            h += '<div class="relative w-full max-h-[320px] overflow-hidden rounded-lg bg-slate-950 flex items-center justify-center border border-slate-800/80 cursor-pointer group" onclick="viewDocument(' + docId + ', \'' + esc(data.filename) + '\', \'' + data.file_type + '\')">';
+            h += '<img src="/api/warehouse/documents/' + docId + '/view" alt="' + esc(data.filename) + '" class="max-h-[300px] w-auto object-contain rounded select-none group-hover:scale-105 transition duration-300" />';
+            h += '<div class="absolute inset-0 bg-slate-950/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition duration-200"><span class="px-3 py-1.5 bg-blue-600/90 text-white rounded-lg text-xs font-medium shadow-lg"><i class="fa-solid fa-expand mr-1.5"></i>Відкрити в повному розмірі</span></div>';
+            h += '</div>';
+            h += '<div class="w-full flex items-center justify-between text-xs text-slate-400 px-1">';
+            h += '<span class="font-medium text-slate-300 truncate max-w-[200px]" title="' + esc(data.filename) + '"><i class="fa-solid fa-image text-emerald-400 mr-1.5"></i>' + esc(data.filename) + '</span>';
+            h += '<button onclick="viewDocument(' + docId + ', \'' + esc(data.filename) + '\', \'' + data.file_type + '\')" class="text-blue-400 hover:text-blue-300 font-medium transition"><i class="fa-solid fa-magnifying-glass-plus mr-1"></i>Збільшити</button>';
+            h += '</div>';
+            h += '</div>';
+
+            // Right: OCR Text and Metadata Card
+            h += '<div class="lg:col-span-8 space-y-3">';
+
+            // Meta bar
+            h += '<div class="glass rounded-xl p-3 border border-slate-800 flex flex-wrap items-center justify-between gap-2 bg-slate-900/60">';
+            h += '<div class="flex items-center gap-3">';
+            if (data.doc_type) {
+                const dt = data.doc_type.toUpperCase();
+                const badge = dt === 'НАКЛАДНА' ? 'badge-nakladna' : (dt === 'ВИМОГА' ? 'badge-vymoha' : 'badge-import');
+                h += '<span class="px-2.5 py-0.5 rounded-full text-xs font-semibold ' + badge + '">' + esc(dt) + '</span>';
+            }
+            if (data.doc_number) {
+                h += '<span class="text-xs text-slate-300"><span class="text-slate-500">№:</span> <span class="font-mono font-bold text-slate-200">' + esc(data.doc_number) + '</span></span>';
+            }
+            if (data.doc_date) {
+                h += '<span class="text-xs text-slate-300"><span class="text-slate-500">Дата:</span> ' + esc(data.doc_date) + '</span>';
+            }
+            h += '</div>';
+            if (rawText) {
+                h += '<button onclick="copyTextDirect(\'ocr-acc-text-' + docId + '\', this)" class="px-2.5 py-1 text-xs text-slate-400 hover:text-slate-200 bg-slate-800 hover:bg-slate-700 rounded-lg transition flex items-center gap-1"><i class="fa-solid fa-copy"></i><span>Копіювати текст</span></button>';
+            }
+            h += '</div>';
+
+            // OCR Text Box
+            h += '<div class="glass rounded-xl p-3 border border-slate-800 bg-slate-900/60">';
+            h += '<div class="text-xs font-semibold text-slate-400 mb-1.5 flex items-center gap-1.5"><i class="fa-solid fa-align-left text-blue-400"></i><span>Розпізнаний OCR текст з файлу:</span></div>';
+            h += '<pre id="ocr-acc-text-' + docId + '" class="bg-slate-950/80 p-3 rounded-lg border border-slate-800/80 text-slate-300 font-mono text-[11px] whitespace-pre-wrap break-words leading-relaxed max-h-[160px] overflow-y-auto select-text">' + (rawText ? esc(rawText) : '<span class="text-slate-500 italic">(Розпізнаний текст відсутній)</span>') + '</pre>';
+            h += '</div>';
+
+            // Items Impact Table
+            if (impacts.length > 0) {
+                h += '<div class="glass rounded-xl p-3 border border-slate-800 bg-slate-900/60">';
+                h += '<div class="text-xs font-semibold text-slate-400 mb-2 flex items-center justify-between"><span>Позиції в документі (' + impacts.length + ')</span></div>';
+                h += '<div class="overflow-x-auto"><table class="w-full text-xs"><thead><tr class="text-slate-500 text-[11px] uppercase"><th class="py-1 pr-3 text-left">Ном. номер</th><th class="py-1 pr-3 text-left">Найменування</th><th class="py-1 pr-3 text-left">Тип</th><th class="py-1 pr-3 text-right">Кількість</th><th class="py-1 pr-3 text-left">Од.</th><th class="py-1 pr-3 text-left">Джерело</th></tr></thead><tbody>';
+                impacts.forEach(imp => {
+                    const isInc = imp.operation_type === 'income';
+                    const badge = isInc ? 'badge-income' : 'badge-expense';
+                    const label = isInc ? 'Прихід' : 'Розхід';
+                    const qi = fmtImpactQty(imp.quantity, isInc);
+                    h += `<tr class="border-t border-slate-800/30 hover:bg-slate-800/30 transition group">
+                        <td class="py-1.5 pr-3 font-mono text-slate-400">
+                            <div class="flex items-center justify-between gap-1">
+                                <span>${esc(imp.sku)}</span>
+                                <button onclick="event.stopPropagation(); openEditModal(${imp.item_id}, 'sku', '${esc(imp.sku)}', 'Номенклатурний номер (SKU)')" class="text-slate-500 hover:text-blue-400 p-0.5 rounded transition opacity-0 hover:opacity-100 group-hover:opacity-100" title="Редагувати номенклатурний номер">
+                                    <i class="fa-solid fa-pencil text-[10px]"></i>
+                                </button>
+                            </div>
+                        </td>
+                        <td class="py-1.5 pr-3 text-slate-200">
+                            <div class="flex items-center justify-between gap-1">
+                                <span class="truncate max-w-[180px]" title="${esc(imp.name)}">${esc(imp.name)}</span>
+                                <button onclick="event.stopPropagation(); openEditModal(${imp.item_id}, 'name', '${esc(imp.name)}', 'Найменування')" class="text-slate-500 hover:text-blue-400 p-0.5 rounded transition opacity-0 hover:opacity-100 group-hover:opacity-100 shrink-0" title="Редагувати найменування">
+                                    <i class="fa-solid fa-pencil text-[10px]"></i>
+                                </button>
+                            </div>
+                        </td>
+                        <td class="py-1.5 pr-3"><span class="px-2 py-0.5 rounded-full text-[10px] font-medium ${badge}">${label}</span></td>
+                        <td class="py-1.5 pr-3 text-right font-medium ${qi[1]}">
+                            <div class="flex items-center justify-end gap-1">
+                                <span>${qi[0]}</span>
+                                <button onclick="event.stopPropagation(); openEditModal(${imp.item_id}, 'balance', '${imp.quantity}', 'Залишок (кількість)')" class="text-slate-500 hover:text-blue-400 p-0.5 rounded transition opacity-0 hover:opacity-100 group-hover:opacity-100" title="Коригувати кількість/залишок">
+                                    <i class="fa-solid fa-pencil text-[10px]"></i>
+                                </button>
+                            </div>
+                        </td>
+                        <td class="py-1.5 pr-3 text-slate-400">
+                            <div class="flex items-center justify-between gap-1">
+                                <span>${esc(imp.unit)}</span>
+                                <button onclick="event.stopPropagation(); openEditModal(${imp.item_id}, 'unit', '${esc(imp.unit)}', 'Одиниця виміру')" class="text-slate-500 hover:text-blue-400 p-0.5 rounded transition opacity-0 hover:opacity-100 group-hover:opacity-100" title="Редагувати одиницю виміру">
+                                    <i class="fa-solid fa-pencil text-[10px]"></i>
+                                </button>
+                            </div>
+                        </td>
+                        <td class="py-1.5 pr-3 text-slate-500 text-[11px] max-w-[200px] truncate" title="${esc(imp.source_row || '')}">${esc(imp.source_row || '')}</td>
+                    </tr>`;
+                });
+                h += '</tbody></table></div></div>';
+            }
+
+            h += '</div></div>'; // end grid
+        } else {
+            // Excel / other non-photo documents
+            if (impacts.length === 0) {
+                h += '<p class="text-slate-500 py-2">Документ не вплинув на жодну позицію.</p>';
+            } else {
+                h += '<table class="w-full text-xs"><thead><tr class="text-slate-500 text-[11px] uppercase">' +
+                    '<th class="py-1 pr-3 text-left">Ном. номер</th><th class="py-1 pr-3 text-left">Найменування</th>' +
+                    '<th class="py-1 pr-3 text-left">Тип</th><th class="py-1 pr-3 text-right">Кількість</th>' +
+                    '<th class="py-1 pr-3 text-left">Од.</th><th class="py-1 pr-3 text-left">Джерело</th>' +
+                    '</tr></thead><tbody>';
+                impacts.forEach(imp => {
+                    const isInc = imp.operation_type === 'income';
+                    const badge = isInc ? 'badge-income' : 'badge-expense';
+                    const label = isInc ? 'Прихід' : 'Розхід';
+                    const qi = fmtImpactQty(imp.quantity, isInc);
+                    const srcRow = imp.source_row || '';
+                    h += `<tr class="border-t border-slate-800/30 hover:bg-slate-800/30 transition group">
+                        <td class="py-2 pr-3 font-mono text-slate-400">
+                            <div class="flex items-center justify-between gap-1">
+                                <span>${esc(imp.sku)}</span>
+                                <button onclick="event.stopPropagation(); openEditModal(${imp.item_id}, 'sku', '${esc(imp.sku)}', 'Номенклатурний номер (SKU)')" class="text-slate-500 hover:text-blue-400 p-0.5 rounded transition opacity-0 hover:opacity-100 group-hover:opacity-100" title="Редагувати номенклатурний номер">
+                                    <i class="fa-solid fa-pencil text-[10px]"></i>
+                                </button>
+                            </div>
+                        </td>
+                        <td class="py-2 pr-3 text-slate-200">
+                            <div class="flex items-center justify-between gap-1">
+                                <span class="truncate max-w-[200px]" title="${esc(imp.name)}">${esc(imp.name)}</span>
+                                <button onclick="event.stopPropagation(); openEditModal(${imp.item_id}, 'name', '${esc(imp.name)}', 'Найменування')" class="text-slate-500 hover:text-blue-400 p-0.5 rounded transition opacity-0 hover:opacity-100 group-hover:opacity-100 shrink-0" title="Редагувати найменування">
+                                    <i class="fa-solid fa-pencil text-[10px]"></i>
+                                </button>
+                            </div>
+                        </td>
+                        <td class="py-2 pr-3"><span class="px-2 py-0.5 rounded-full text-[11px] font-medium ${badge}">${label}</span></td>
+                        <td class="py-2 pr-3 text-right font-medium ${qi[1]}">
+                            <div class="flex items-center justify-end gap-1">
+                                <span>${qi[0]}</span>
+                                <button onclick="event.stopPropagation(); openEditModal(${imp.item_id}, 'balance', '${imp.quantity}', 'Залишок (кількість)')" class="text-slate-500 hover:text-blue-400 p-0.5 rounded transition opacity-0 hover:opacity-100 group-hover:opacity-100" title="Коригувати кількість/залишок">
+                                    <i class="fa-solid fa-pencil text-[10px]"></i>
+                                </button>
+                            </div>
+                        </td>
+                        <td class="py-2 pr-3 text-slate-400">
+                            <div class="flex items-center justify-between gap-1">
+                                <span>${esc(imp.unit)}</span>
+                                <button onclick="event.stopPropagation(); openEditModal(${imp.item_id}, 'unit', '${esc(imp.unit)}', 'Одиниця виміру')" class="text-slate-500 hover:text-blue-400 p-0.5 rounded transition opacity-0 hover:opacity-100 group-hover:opacity-100" title="Редагувати одиницю виміру">
+                                    <i class="fa-solid fa-pencil text-[10px]"></i>
+                                </button>
+                            </div>
+                        </td>
+                        <td class="py-2 pr-3 text-slate-500 text-[11px] max-w-[250px] truncate" title="${esc(srcRow)}">${esc(srcRow)}</td>
+                    </tr>`;
+                });
+                h += '</tbody></table>';
+            }
+        }
+
+        h += '</div>';
+        content.innerHTML = h;
+    } catch(e) {
+        content.innerHTML = '<p class="text-red-400 py-2">Помилка завантаження: ' + esc(e.message) + '</p>';
+    }
 }
 
 async function toggleDocImpact(docId) {
@@ -470,38 +1137,8 @@ async function toggleDocImpact(docId) {
     chevron.style.transform = 'rotate(90deg)';
 
     const content = document.getElementById('doc-impact-content-' + docId);
-    try {
-        const res = await fetch('/api/warehouse/documents/' + docId + '/impact');
-        const impacts = await res.json();
-        if (impacts.length === 0) {
-            content.innerHTML = '<p class="text-slate-500 py-2">Документ не вплинув на жодну позицію.</p>';
-            return;
-        }
-        let h = '<table class="w-full"><thead><tr class="text-slate-500 text-[11px] uppercase">' +
-            '<th class="py-1 pr-3 text-left">Ном. номер</th><th class="py-1 pr-3 text-left">Найменування</th>' +
-            '<th class="py-1 pr-3 text-left">Тип</th><th class="py-1 pr-3 text-right">Кількість</th>' +
-            '<th class="py-1 pr-3 text-left">Од.</th><th class="py-1 pr-3 text-left">Джерело</th>' +
-            '</tr></thead><tbody>';
-        impacts.forEach(imp => {
-            const isInc = imp.operation_type === 'income';
-            const badge = isInc ? 'badge-income' : 'badge-expense';
-            const label = isInc ? 'Прихід' : 'Розхід';
-            const sign = isInc ? '+' : '-';
-            const srcRow = imp.source_row || '';
-            h += `<tr class="border-t border-slate-800/30">
-                <td class="py-2 pr-3 font-mono text-slate-400">${esc(imp.sku)}</td>
-                <td class="py-2 pr-3 text-slate-200">${esc(imp.name)}</td>
-                <td class="py-2 pr-3"><span class="px-2 py-0.5 rounded-full text-[11px] font-medium ${badge}">${label}</span></td>
-                <td class="py-2 pr-3 text-right font-medium ${isInc ? 'text-emerald-400' : 'text-rose-400'}">${sign}${fmtNum(imp.quantity)}</td>
-                <td class="py-2 pr-3 text-slate-400">${esc(imp.unit)}</td>
-                <td class="py-2 pr-3 text-slate-500 text-[11px] max-w-[250px] truncate" title="${esc(srcRow)}">${esc(srcRow)}</td>
-            </tr>`;
-        });
-        h += '</tbody></table>';
-        content.innerHTML = h;
-    } catch(e) {
-        content.innerHTML = '<p class="text-red-400">Помилка завантаження.</p>';
-    }
+    content.innerHTML = '<div class="py-4 text-center text-slate-500"><i class="fa-solid fa-spinner fa-spin mr-2"></i>Завантаження даних...</div>';
+    await reloadDocImpact(docId);
 }
 
 // ---- Import / Export ----
@@ -575,7 +1212,13 @@ function exportExcel() {
 
 // ---- Document viewing ----
 
-function viewDocument(docId, filename, fileType, sourceRow) {
+let imgZoom = 1.0;
+const MIN_ZOOM = 0.25;
+const MAX_ZOOM = 3.0;
+const ZOOM_STEP = 0.25;
+let currentOcrText = '';
+
+async function viewDocument(docId, filename, fileType, sourceRow) {
     if (fileType === 'excel') {
         let highlightRows = [];
         if (sourceRow) {
@@ -585,58 +1228,226 @@ function viewDocument(docId, filename, fileType, sourceRow) {
         openExcelPreview(docId, filename, highlightRows);
         return;
     }
-    resetImgZoom();
+    currentViewingDocId = docId;
     const img = document.getElementById('img-modal-src');
+    imgZoom = 1.0;
+    img.onload = function() {
+        applyImgZoom();
+    };
     img.src = '/api/warehouse/documents/' + docId + '/view';
+    if (img.complete && img.naturalWidth > 0) {
+        applyImgZoom();
+    }
     document.getElementById('img-modal-title').innerHTML = '<i class="fa-solid fa-image text-emerald-400"></i> ' + esc(filename);
     document.getElementById('img-modal').classList.remove('hidden');
+    updateZoomUI();
+
+    await loadDocumentOcr(docId);
 }
+
+async function loadDocumentOcr(docId) {
+    const docTypeBadge = document.getElementById('ocr-doc-type-badge');
+    const numEl = document.getElementById('ocr-meta-num');
+    const dateEl = document.getElementById('ocr-meta-date');
+    const opEl = document.getElementById('ocr-meta-op');
+    const rawEl = document.getElementById('ocr-raw-text');
+    const itemsBox = document.getElementById('ocr-items-box');
+    const itemsList = document.getElementById('ocr-items-list');
+    const itemsCount = document.getElementById('ocr-items-count');
+
+    currentOcrText = '';
+    rawEl.textContent = 'Завантаження розпізнаного тексту...';
+    numEl.textContent = '—';
+    dateEl.textContent = '—';
+    opEl.textContent = '—';
+    docTypeBadge.innerHTML = '';
+    itemsBox.classList.add('hidden');
+    itemsList.innerHTML = '';
+
+    try {
+        const res = await fetch('/api/warehouse/documents/' + docId + '/ocr');
+        const data = await res.json();
+        if (data.error) {
+            rawEl.textContent = 'Помилка: ' + data.error;
+            return;
+        }
+
+        currentOcrText = data.raw_text || '';
+        rawEl.textContent = currentOcrText || '(Розпізнаний текст відсутній)';
+        numEl.textContent = data.doc_number || '—';
+        dateEl.textContent = data.doc_date || '—';
+
+        const dt = (data.doc_type || '').toUpperCase();
+        if (dt === 'НАКЛАДНА') {
+            docTypeBadge.innerHTML = '<span class="px-2 py-0.5 rounded-full text-[11px] font-medium badge-nakladna"><i class="fa-solid fa-arrow-down mr-1"></i>Накладна</span>';
+            opEl.innerHTML = '<span class="text-emerald-400 font-semibold">НАКЛАДНА (Прихід)</span>';
+        } else if (dt === 'ВИМОГА') {
+            docTypeBadge.innerHTML = '<span class="px-2 py-0.5 rounded-full text-[11px] font-medium badge-vymoha"><i class="fa-solid fa-arrow-up mr-1"></i>Вимога</span>';
+            opEl.innerHTML = '<span class="text-rose-400 font-semibold">ВИМОГА (Розхід / Видача)</span>';
+        } else if (dt) {
+            docTypeBadge.innerHTML = `<span class="px-2 py-0.5 rounded-full text-[11px] font-medium badge-import">${esc(dt)}</span>`;
+            opEl.textContent = dt;
+        } else {
+            docTypeBadge.innerHTML = '';
+            opEl.textContent = '—';
+        }
+
+        const items = data.impact || [];
+        if (items.length > 0) {
+            itemsBox.classList.remove('hidden');
+            itemsCount.textContent = items.length;
+            let listHtml = '';
+            items.forEach((it, idx) => {
+                const isInc = it.operation_type === 'income';
+                const qi = fmtImpactQty(it.quantity, isInc);
+                listHtml += `<div class="p-2.5 rounded-lg bg-slate-950/60 border border-slate-800/60 flex items-start justify-between gap-2 hover:border-slate-700/80 transition group">
+                    <div class="min-w-0 flex-1">
+                        <div class="flex items-center justify-between gap-1">
+                            <span class="font-medium text-slate-200 truncate" title="${esc(it.name)}">${idx + 1}. ${esc(it.name)}</span>
+                            <button onclick="event.stopPropagation(); openEditModal(${it.item_id}, 'name', '${esc(it.name)}', 'Найменування')" class="text-slate-500 hover:text-blue-400 p-0.5 rounded transition opacity-0 hover:opacity-100 group-hover:opacity-100 shrink-0" title="Редагувати найменування">
+                                <i class="fa-solid fa-pencil text-[10px]"></i>
+                            </button>
+                        </div>
+                        <div class="flex items-center justify-between gap-1 mt-0.5">
+                            <span class="text-[10px] text-slate-500 font-mono truncate">${esc(it.sku || '(без SKU)')}</span>
+                            <button onclick="event.stopPropagation(); openEditModal(${it.item_id}, 'sku', '${esc(it.sku)}', 'Номенклатурний номер (SKU)')" class="text-slate-500 hover:text-blue-400 p-0.5 rounded transition opacity-0 hover:opacity-100 group-hover:opacity-100 shrink-0" title="Редагувати SKU">
+                                <i class="fa-solid fa-pencil text-[9px]"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="text-right shrink-0">
+                        <div class="flex items-center justify-end gap-1 font-medium ${qi[1]}">
+                            <span>${qi[0]}</span>
+                            <button onclick="event.stopPropagation(); openEditModal(${it.item_id}, 'balance', '${it.quantity}', 'Залишок (кількість)')" class="text-slate-500 hover:text-blue-400 p-0.5 rounded transition opacity-0 hover:opacity-100 group-hover:opacity-100" title="Коригувати кількість/залишок">
+                                <i class="fa-solid fa-pencil text-[10px]"></i>
+                            </button>
+                        </div>
+                        <div class="flex items-center justify-end gap-1 text-[10px] text-slate-400 mt-0.5">
+                            <span>${esc(it.unit || '')}</span>
+                            <button onclick="event.stopPropagation(); openEditModal(${it.item_id}, 'unit', '${esc(it.unit)}', 'Одиниця виміру')" class="text-slate-500 hover:text-blue-400 p-0.5 rounded transition opacity-0 hover:opacity-100 group-hover:opacity-100" title="Редагувати одиницю виміру">
+                                <i class="fa-solid fa-pencil text-[9px]"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>`;
+            });
+            itemsList.innerHTML = listHtml;
+        }
+    } catch (e) {
+        rawEl.textContent = 'Помилка завантаження OCR: ' + e.message;
+    }
+}
+
+function toggleOcrPanel() {
+    const panel = document.getElementById('ocr-panel');
+    const btn = document.getElementById('toggle-ocr-btn');
+    if (!panel) return;
+    if (panel.classList.contains('hidden')) {
+        panel.classList.remove('hidden');
+        btn.classList.add('bg-blue-600/20', 'text-blue-400', 'border-blue-500/30');
+        btn.classList.remove('text-slate-400', 'bg-slate-800');
+    } else {
+        panel.classList.add('hidden');
+        btn.classList.remove('bg-blue-600/20', 'text-blue-400', 'border-blue-500/30');
+        btn.classList.add('text-slate-400', 'bg-slate-800');
+    }
+}
+
+function copyOcrText() {
+    if (!currentOcrText) return;
+    navigator.clipboard.writeText(currentOcrText).then(() => {
+        const label = document.getElementById('copy-text-label');
+        if (label) {
+            label.textContent = 'Скопійовано!';
+            setTimeout(() => { label.textContent = 'Копіювати'; }, 2000);
+        }
+    }).catch(err => {
+        console.error('Copy failed:', err);
+    });
+}
+
+function copyTextDirect(elementId, btn) {
+    const el = document.getElementById(elementId);
+    if (!el) return;
+    const text = el.innerText || el.textContent || '';
+    if (!text) return;
+    navigator.clipboard.writeText(text).then(() => {
+        const origHtml = btn.innerHTML;
+        btn.innerHTML = '<i class="fa-solid fa-check text-emerald-400"></i><span class="text-emerald-400">Скопійовано!</span>';
+        setTimeout(() => { btn.innerHTML = origHtml; }, 2000);
+    }).catch(err => {
+        console.error('Copy failed:', err);
+    });
+}
+
 function closeImgModal() {
     document.getElementById('img-modal').classList.add('hidden');
-    resetImgZoom();
-}
-
-let imgZoom = 1;
-let imgFitMode = true;
-
-function getEffectiveZoom() {
-    if (!imgFitMode) return imgZoom;
     const img = document.getElementById('img-modal-src');
-    if (!img.naturalWidth) return 1;
-    return img.clientWidth / img.naturalWidth;
+    if (img) {
+        img.src = '';
+    }
+    imgZoom = 1.0;
+    currentOcrText = '';
 }
+
+function applyImgZoom() {
+    const img = document.getElementById('img-modal-src');
+    if (!img) return;
+    const nw = img.naturalWidth;
+    const nh = img.naturalHeight;
+    if (nw > 0) {
+        img.style.maxWidth = 'none';
+        img.style.maxHeight = 'none';
+        img.style.width = Math.round(nw * imgZoom) + 'px';
+        img.style.height = Math.round(nh * imgZoom) + 'px';
+        img.style.flexShrink = '0';
+    } else {
+        img.style.maxWidth = 'none';
+        img.style.maxHeight = 'none';
+        img.style.width = (imgZoom * 100) + '%';
+        img.style.height = 'auto';
+        img.style.flexShrink = '0';
+    }
+}
+
 function setImgZoom(level) {
-    const img = document.getElementById('img-modal-src');
-    const container = document.getElementById('img-modal-container');
-    imgZoom = Math.max(0.05, Math.min(10, level));
-    imgFitMode = false;
-    img.style.maxWidth = 'none';
-    img.style.maxHeight = 'none';
-    img.style.width = (img.naturalWidth * imgZoom) + 'px';
-    img.style.height = 'auto';
-    container.style.justifyContent = 'flex-start';
-    container.style.alignItems = 'flex-start';
-    updateZoomLabel();
+    imgZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, Math.round(level * 100) / 100));
+    applyImgZoom();
+    updateZoomUI();
 }
-function zoomImgIn() { setImgZoom((imgFitMode ? getEffectiveZoom() : imgZoom) * 1.25); }
-function zoomImgOut() { setImgZoom((imgFitMode ? getEffectiveZoom() : imgZoom) / 1.25); }
+
+function zoomImgIn() {
+    const nextZoom = Math.min(MAX_ZOOM, Math.round((imgZoom + ZOOM_STEP) * 100) / 100);
+    setImgZoom(nextZoom);
+}
+
+function zoomImgOut() {
+    const nextZoom = Math.max(MIN_ZOOM, Math.round((imgZoom - ZOOM_STEP) * 100) / 100);
+    setImgZoom(nextZoom);
+}
+
 function resetImgZoom() {
-    const img = document.getElementById('img-modal-src');
+    setImgZoom(1.0);
     const container = document.getElementById('img-modal-container');
-    imgZoom = 1;
-    imgFitMode = true;
-    img.style.maxWidth = '';
-    img.style.maxHeight = '';
-    img.style.width = '';
-    img.style.height = '';
-    container.style.justifyContent = '';
-    container.style.alignItems = '';
-    updateZoomLabel();
+    if (container) {
+        container.scrollLeft = 0;
+        container.scrollTop = 0;
+    }
 }
-function updateZoomLabel() {
-    const el = document.getElementById('img-zoom-label');
-    if (!el) return;
-    el.textContent = imgFitMode ? 'Вписати' : (Math.round(imgZoom * 100) + '%');
+
+function updateZoomUI() {
+    const label = document.getElementById('img-zoom-label');
+    if (label) {
+        label.textContent = Math.round(imgZoom * 100) + '%';
+    }
+    const btnIn = document.getElementById('img-zoom-in-btn');
+    if (btnIn) {
+        btnIn.disabled = imgZoom >= MAX_ZOOM;
+    }
+    const btnOut = document.getElementById('img-zoom-out-btn');
+    if (btnOut) {
+        btnOut.disabled = imgZoom <= MIN_ZOOM;
+    }
 }
 
 async function openExcelPreview(docId, filename, highlightRows) {
@@ -724,6 +1535,10 @@ async function executeDelete(docId) {
 function esc(s) {
     return String(s || '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
 }
+function fmtImpactQty(qty, isInc) {
+    if (qty === 0) return ['0', 'text-slate-400'];
+    return [(isInc ? '+' : '-') + fmtNum(qty), isInc ? 'text-emerald-400' : 'text-rose-400'];
+}
 function fmtNum(v) {
     if (v === null || v === undefined || v === '') return '';
     const n = Number(v);
@@ -741,14 +1556,218 @@ function getFileIcon(ft) {
     return '<i class="fa-solid fa-image text-emerald-400"></i>';
 }
 
+// ---- Log Console Logic ----
+
+let allLogs = [];
+let lastLogId = 0;
+let autoScroll = true;
+let logEventSource = null;
+let logPollInterval = null;
+
+function toggleAutoScroll() {
+    const el = document.getElementById('log-autoscroll');
+    autoScroll = el ? el.checked : true;
+    if (autoScroll) {
+        scrollLogsToBottom();
+    }
+}
+
+function scrollLogsToBottom() {
+    const term = document.getElementById('log-terminal');
+    if (term) {
+        term.scrollTop = term.scrollHeight;
+    }
+}
+
+async function fetchLogs() {
+    try {
+        const res = await fetch('/api/logs?since_id=' + lastLogId);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data.logs && data.logs.length > 0) {
+            appendLogs(data.logs);
+        }
+        if (data.last_id) {
+            lastLogId = Math.max(lastLogId, data.last_id);
+        }
+        updateLogBadge(data.total_count || allLogs.length);
+    } catch (e) {
+        console.error('Fetch logs error:', e);
+    }
+}
+
+function updateLogBadge(totalCount) {
+    const badge = document.getElementById('logs-count');
+    if (badge) {
+        badge.textContent = totalCount;
+    }
+}
+
+function appendLogs(newEntries) {
+    if (!newEntries || newEntries.length === 0) return;
+    const existingIds = new Set(allLogs.map(l => l.id));
+    for (const entry of newEntries) {
+        if (!existingIds.has(entry.id)) {
+            allLogs.push(entry);
+            existingIds.add(entry.id);
+            if (entry.id > lastLogId) {
+                lastLogId = entry.id;
+            }
+        }
+    }
+    if (allLogs.length > 5000) {
+        allLogs = allLogs.slice(-5000);
+    }
+    renderLogs();
+    updateLogBadge(allLogs.length);
+}
+
+function onLogFilterChange() {
+    renderLogs();
+}
+
+function renderLogs() {
+    const container = document.getElementById('log-lines');
+    const emptyState = document.getElementById('log-empty-state');
+    const ratioEl = document.getElementById('log-count-ratio');
+    if (!container) return;
+
+    const query = (document.getElementById('log-search-input')?.value || '').toLowerCase().trim();
+    const showInfo = document.getElementById('lvl-info')?.checked ?? true;
+    const showSuccess = document.getElementById('lvl-success')?.checked ?? true;
+    const showWarn = document.getElementById('lvl-warn')?.checked ?? true;
+    const showErr = document.getElementById('lvl-err')?.checked ?? true;
+
+    const filtered = allLogs.filter(entry => {
+        const lvl = (entry.level || 'INFO').toUpperCase();
+        if (lvl === 'INFO' && !showInfo) return false;
+        if (lvl === 'SUCCESS' && !showSuccess) return false;
+        if (lvl === 'WARN' && !showWarn) return false;
+        if (lvl === 'ERR' && !showErr) return false;
+
+        if (query) {
+            const text = (entry.timestamp + ' ' + entry.level + ' ' + entry.logger + ' ' + entry.message + ' ' + (entry.raw || '')).toLowerCase();
+            if (!text.includes(query)) return false;
+        }
+        return true;
+    });
+
+    if (ratioEl) {
+        ratioEl.textContent = filtered.length + '/' + allLogs.length;
+    }
+
+    if (filtered.length === 0) {
+        container.innerHTML = '';
+        if (emptyState) emptyState.classList.remove('hidden');
+        return;
+    }
+
+    if (emptyState) emptyState.classList.add('hidden');
+
+    let html = '';
+    for (const l of filtered) {
+        const lvl = (l.level || 'INFO').toUpperCase();
+        let lvlBg = 'bg-sky-500/10 text-sky-400 border border-sky-500/20';
+        if (lvl === 'SUCCESS') {
+            lvlBg = 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20';
+        } else if (lvl === 'WARN') {
+            lvlBg = 'bg-amber-500/10 text-amber-400 border border-amber-500/20';
+        } else if (lvl === 'ERR') {
+            lvlBg = 'bg-rose-500/10 text-rose-400 border border-rose-500/20';
+        } else if (lvl === 'DEBUG') {
+            lvlBg = 'bg-purple-500/10 text-purple-400 border border-purple-500/20';
+        }
+
+        const ts = esc(l.timestamp || '');
+        const lg = esc(l.logger || '');
+        const msg = esc(l.message || '');
+
+        let formattedMsg = msg;
+        if (query) {
+            const regex = new RegExp('(' + query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi');
+            formattedMsg = formattedMsg.replace(regex, '<mark class="bg-yellow-500/30 text-yellow-200 px-0.5 rounded">$1</mark>');
+        }
+
+        html += `<div class="hover:bg-slate-900/60 py-0.5 px-1.5 rounded transition flex items-start gap-2 text-[11px] font-mono leading-relaxed border-b border-slate-900/40">
+            <span class="text-slate-500 shrink-0 select-none">${ts}</span>
+            <span class="px-1.5 py-0.2 rounded text-[10px] font-bold shrink-0 ${lvlBg}">${lvl}</span>
+            <span class="text-slate-400 shrink-0 truncate max-w-[180px] select-none" title="${lg}">[${lg}]</span>
+            <span class="text-slate-200 break-words flex-1 select-text ${lvl === 'ERR' ? 'text-rose-300 font-semibold' : ''}">${formattedMsg}</span>
+        </div>`;
+    }
+
+    container.innerHTML = html;
+
+    if (autoScroll) {
+        scrollLogsToBottom();
+    }
+}
+
+async function clearLogsServer() {
+    try {
+        await fetch('/api/logs/clear', { method: 'POST' });
+        allLogs = [];
+        lastLogId = 0;
+        renderLogs();
+        updateLogBadge(0);
+    } catch (e) {
+        console.error('Clear logs error:', e);
+    }
+}
+
+function connectLogStream() {
+    try {
+        if (window.EventSource) {
+            logEventSource = new EventSource('/api/logs/stream');
+            logEventSource.onmessage = function(event) {
+                try {
+                    const entry = JSON.parse(event.data);
+                    appendLogs([entry]);
+                } catch (err) {
+                    console.error('SSE parse error:', err);
+                }
+            };
+            logEventSource.onerror = function() {
+                if (!logPollInterval) {
+                    logPollInterval = setInterval(fetchLogs, 2000);
+                }
+            };
+        } else {
+            logPollInterval = setInterval(fetchLogs, 2000);
+        }
+    } catch (e) {
+        logPollInterval = setInterval(fetchLogs, 2000);
+    }
+}
+
 document.addEventListener('DOMContentLoaded', function() {
     refreshAll();
-    document.getElementById('img-modal-container').addEventListener('wheel', function(e) {
-        if (!e.ctrlKey) return;
-        e.preventDefault();
-        const z = imgFitMode ? getEffectiveZoom() : imgZoom;
-        setImgZoom(e.deltaY < 0 ? z * 1.15 : z / 1.15);
-    }, {passive: false});
+    fetchLogs();
+    connectLogStream();
+    const imgContainer = document.getElementById('img-modal-container');
+    if (imgContainer) {
+        imgContainer.addEventListener('wheel', function(e) {
+            if (!e.ctrlKey) return;
+            e.preventDefault();
+            if (e.deltaY < 0) {
+                zoomImgIn();
+            } else {
+                zoomImgOut();
+            }
+        }, {passive: false});
+    }
+
+    document.addEventListener('keydown', function(e) {
+        const editModal = document.getElementById('edit-modal');
+        if (editModal && !editModal.classList.contains('hidden')) {
+            if (e.key === 'Escape') {
+                closeEditModal();
+            } else if (e.key === 'Enter' && (e.target.id === 'edit-new-value' || e.target.id === 'edit-comment')) {
+                e.preventDefault();
+                submitEditField();
+            }
+        }
+    });
 });
 </script>
 </body>
@@ -766,6 +1785,7 @@ class WebServer:
         owner_user_id: int,
         host: str = "127.0.0.1",
         port: int = 8000,
+        log_buffer: Optional[LogBuffer] = None,
     ) -> None:
         self._db = warehouse_db
         self._fs = file_store
@@ -773,6 +1793,8 @@ class WebServer:
         self._owner_id = owner_user_id
         self._host = host
         self._port = port
+        self._log_buffer = log_buffer or get_global_log_buffer()
+        setup_logging_capture(buffer=self._log_buffer)
 
         self._app = web.Application(client_max_size=50 * 1024 * 1024)
         self._setup_routes()
@@ -783,14 +1805,22 @@ class WebServer:
         self._app.router.add_get("/", self._index)
         self._app.router.add_get("/api/warehouse/items", self._api_items)
         self._app.router.add_get("/api/warehouse/items/{item_id}/transactions", self._api_item_transactions)
+        self._app.router.add_post("/api/warehouse/items/{item_id}/edit", self._api_edit_item)
+        self._app.router.add_patch("/api/warehouse/items/{item_id}", self._api_edit_item)
+        self._app.router.add_post("/api/warehouse/items/{item_id}", self._api_edit_item)
         self._app.router.add_get("/api/warehouse/documents", self._api_documents)
         self._app.router.add_get("/api/warehouse/documents/{doc_id}/impact", self._api_document_impact)
+        self._app.router.add_get("/api/warehouse/documents/{doc_id}/ocr", self._api_document_ocr)
         self._app.router.add_get("/api/warehouse/documents/{doc_id}/view", self._api_document_view)
         self._app.router.add_get("/api/warehouse/documents/{doc_id}/download", self._api_document_download)
         self._app.router.add_get("/api/warehouse/documents/{doc_id}/preview", self._api_document_preview)
         self._app.router.add_delete("/api/warehouse/documents/{doc_id}", self._api_delete_document)
         self._app.router.add_post("/api/warehouse/import", self._api_import_excel)
         self._app.router.add_get("/api/warehouse/export", self._api_export_excel)
+        self._app.router.add_get("/api/logs", self._api_logs)
+        self._app.router.add_post("/api/logs/clear", self._api_clear_logs)
+        self._app.router.add_delete("/api/logs", self._api_clear_logs)
+        self._app.router.add_get("/api/logs/stream", self._api_stream_logs)
 
     async def _index(self, request: web.Request) -> web.Response:
         return web.Response(text=HTML_PAGE, content_type="text/html")
@@ -804,6 +1834,88 @@ class WebServer:
         txs = self._db.get_item_transactions(item_id)
         return web.json_response(txs)
 
+    async def _api_edit_item(self, request: web.Request) -> web.Response:
+        try:
+            item_id = int(request.match_info["item_id"])
+        except (KeyError, ValueError):
+            return web.json_response({"error": "Некоректний ID позиції"}, status=400)
+
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"error": "Некоректний JSON"}, status=400)
+
+        if not isinstance(data, dict):
+            return web.json_response({"error": "Тіло запиту має бути JSON об'єктом"}, status=400)
+
+        field = data.get("field")
+        value = data.get("value")
+        comment = data.get("comment", "")
+
+        allowed_fields = {"name", "sku", "unit", "supplier", "notes", "balance", "quantity"}
+        if not field:
+            matching_fields = [k for k in data.keys() if k in allowed_fields]
+            if len(matching_fields) == 1:
+                field = matching_fields[0]
+                value = data[field]
+            else:
+                return web.json_response({"error": "Не вказано поле для редагування ('field')"}, status=400)
+
+        if field not in allowed_fields:
+            return web.json_response(
+                {"error": f"Непідтримуване поле: {field}. Дозволені: {sorted(allowed_fields)}"},
+                status=400,
+            )
+
+        if value is None or (isinstance(value, str) and not value.strip() and field in {"balance", "quantity"}):
+            return web.json_response({"error": "Значення ('value') не може бути порожнім/null"}, status=400)
+
+        item = self._db.get_item(item_id)
+        if not item:
+            return web.json_response({"error": "Позицію не знайдено"}, status=404)
+
+        if field in {"balance", "quantity"}:
+            try:
+                target_qty = float(value)
+            except (ValueError, TypeError):
+                return web.json_response({"error": "Значення кількості має бути числом"}, status=400)
+
+            try:
+                result = self._db.adjust_item_quantity(
+                    item_id=item_id,
+                    target_quantity=target_qty,
+                    comment=str(comment or ""),
+                )
+            except Exception as exc:
+                logger.error("Error adjusting item quantity: %s", exc)
+                return web.json_response({"error": f"Помилка оновлення кількості: {exc}"}, status=400)
+
+            if not result:
+                return web.json_response({"error": "Позицію не знайдено"}, status=404)
+
+            updated_item = self._db.get_item(item_id)
+            if updated_item:
+                updated_item["balance"] = target_qty
+                result["item"] = updated_item
+
+            return web.json_response(result)
+
+        try:
+            result = self._db.adjust_item_field(
+                item_id=item_id,
+                field=field,
+                new_value=str(value),
+                comment=str(comment or ""),
+            )
+        except Exception as exc:
+            logger.error("Error adjusting item field: %s", exc)
+            return web.json_response({"error": f"Помилка оновлення: {exc}"}, status=400)
+
+        if not result:
+            return web.json_response({"error": "Позицію не знайдено"}, status=404)
+
+        return web.json_response(result)
+
     async def _api_documents(self, request: web.Request) -> web.Response:
         docs = self._db.get_documents()
         return web.json_response(docs)
@@ -812,6 +1924,56 @@ class WebServer:
         doc_id = int(request.match_info["doc_id"])
         impact = self._db.get_document_impact(doc_id)
         return web.json_response(impact)
+
+    async def _api_document_ocr(self, request: web.Request) -> web.Response:
+        doc_id = int(request.match_info["doc_id"])
+        doc = self._db.get_document(doc_id)
+        if not doc:
+            return web.json_response({"error": "Документ не знайдено"}, status=404)
+        impact = self._db.get_document_impact(doc_id)
+        raw_text = ""
+        # 1. Try reading from .txt file on disk via FileStore or direct file_path
+        stems_to_try: list[str] = []
+        if doc.get("file_path"):
+            stems_to_try.append(os.path.splitext(os.path.basename(doc["file_path"]))[0])
+            txt_direct = os.path.splitext(doc["file_path"])[0] + ".txt"
+            if os.path.exists(txt_direct):
+                try:
+                    with open(txt_direct, "r", encoding="utf-8") as f:
+                        raw_text = f.read()
+                except Exception:
+                    pass
+        if not raw_text and doc.get("filename"):
+            stems_to_try.append(os.path.splitext(os.path.basename(doc["filename"]))[0])
+        stems_to_try.append(str(doc_id))
+
+        if not raw_text:
+            for stem in stems_to_try:
+                if stem:
+                    try:
+                        t = self._fs.read_text(stem)
+                        if isinstance(t, str) and t:
+                            raw_text = t
+                            break
+                    except Exception:
+                        pass
+
+        # 2. Fallback to DB raw_text
+        if not raw_text:
+            raw_text = doc.get("raw_text", "")
+            if not isinstance(raw_text, str):
+                raw_text = str(raw_text or "")
+
+        return web.json_response({
+            "id": doc["id"],
+            "filename": doc["filename"],
+            "file_type": doc["file_type"],
+            "doc_type": doc.get("doc_type", ""),
+            "doc_number": doc.get("doc_number", ""),
+            "doc_date": doc.get("doc_date", ""),
+            "raw_text": raw_text,
+            "impact": impact,
+        })
 
     async def _api_document_view(self, request: web.Request) -> web.Response:
         doc_id = int(request.match_info["doc_id"])
@@ -983,15 +2145,14 @@ class WebServer:
                     qty = float(expense)
                 elif balance and float(balance) > 0:
                     qty = float(balance)
-                if qty > 0:
-                    self._db.add_transaction(
-                        item_id=item_id, document_id=doc_id,
-                        operation_type="income", quantity=qty,
-                        doc_number=row.get("doc_number", ""),
-                        doc_date=row.get("doc_date", ""),
-                        source_row=source_row,
-                    )
-                    transactions_created += 1
+                self._db.add_transaction(
+                    item_id=item_id, document_id=doc_id,
+                    operation_type="income", quantity=qty,
+                    doc_number=row.get("doc_number", ""),
+                    doc_date=row.get("doc_date", ""),
+                    source_row=source_row,
+                )
+                transactions_created += 1
             elif is_vymoha or row_doc_type == "ВИМОГА":
                 qty = 0.0
                 if expense and float(expense) > 0:
@@ -1000,16 +2161,16 @@ class WebServer:
                     qty = float(income)
                 elif balance and float(balance) > 0:
                     qty = float(balance)
-                if qty > 0:
-                    self._db.add_transaction(
-                        item_id=item_id, document_id=doc_id,
-                        operation_type="expense", quantity=qty,
-                        doc_number=row.get("doc_number", ""),
-                        doc_date=row.get("doc_date", ""),
-                        source_row=source_row,
-                    )
-                    transactions_created += 1
+                self._db.add_transaction(
+                    item_id=item_id, document_id=doc_id,
+                    operation_type="expense", quantity=qty,
+                    doc_number=row.get("doc_number", ""),
+                    doc_date=row.get("doc_date", ""),
+                    source_row=source_row,
+                )
+                transactions_created += 1
             else:
+                created_any = False
                 if income and float(income) > 0:
                     self._db.add_transaction(
                         item_id=item_id, document_id=doc_id,
@@ -1019,6 +2180,7 @@ class WebServer:
                         source_row=source_row,
                     )
                     transactions_created += 1
+                    created_any = True
                 if expense and float(expense) > 0:
                     self._db.add_transaction(
                         item_id=item_id, document_id=doc_id,
@@ -1028,11 +2190,13 @@ class WebServer:
                         source_row=source_row,
                     )
                     transactions_created += 1
+                    created_any = True
 
-                if not income and not expense and balance and float(balance) > 0:
+                if not created_any:
+                    bal_qty = float(balance) if balance else 0.0
                     self._db.add_transaction(
                         item_id=item_id, document_id=doc_id,
-                        operation_type="income", quantity=float(balance),
+                        operation_type="income", quantity=max(bal_qty, 0.0),
                         doc_number=row.get("doc_number", ""),
                         doc_date=row.get("doc_date", ""),
                         source_row=source_row,
@@ -1060,6 +2224,66 @@ class WebServer:
             content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             headers={"Content-Disposition": 'attachment; filename="warehouse_export.xlsx"'},
         )
+
+    async def _api_logs(self, request: web.Request) -> web.Response:
+        try:
+            since_id = int(request.query.get("since_id", 0))
+        except ValueError:
+            since_id = 0
+        try:
+            limit = int(request.query.get("limit", 1000))
+        except ValueError:
+            limit = 1000
+        level = request.query.get("level")
+        query = request.query.get("q")
+
+        entries, total, last_id = self._log_buffer.get_logs(
+            since_id=since_id,
+            limit=limit,
+            level=level,
+            query=query,
+        )
+        return web.json_response({
+            "logs": [e.to_dict() for e in entries],
+            "total_count": total,
+            "last_id": last_id,
+        })
+
+    async def _api_clear_logs(self, request: web.Request) -> web.Response:
+        count = self._log_buffer.clear()
+        return web.json_response({"success": True, "cleared_count": count})
+
+    async def _api_stream_logs(self, request: web.Request) -> web.StreamResponse:
+        resp = web.StreamResponse(
+            status=200,
+            reason="OK",
+            headers={
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+            },
+        )
+        await resp.prepare(request)
+
+        queue = self._log_buffer.subscribe()
+        try:
+            # Send initial ping comment
+            await resp.write(b": ping\n\n")
+            while True:
+                try:
+                    entry = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    data_str = json.dumps(entry.to_dict(), ensure_ascii=False)
+                    payload = f"data: {data_str}\n\n"
+                    await resp.write(payload.encode("utf-8"))
+                except asyncio.TimeoutError:
+                    # Heartbeat comment to prevent client timeout
+                    await resp.write(b": ping\n\n")
+        except (asyncio.CancelledError, ConnectionResetError):
+            pass
+        finally:
+            self._log_buffer.unsubscribe(queue)
+
+        return resp
 
     async def start(self) -> None:
         self._runner = web.AppRunner(self._app)

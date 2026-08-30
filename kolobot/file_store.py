@@ -37,10 +37,34 @@ class FileStore:
         except FileNotFoundError:
             pass
 
+    def save_text(self, doc_id: str, text: str) -> str:
+        """Save recognized OCR text directly alongside document file as {doc_id}.txt."""
+        self._base.mkdir(parents=True, exist_ok=True)
+        txt_path = self._base / f"{doc_id}.txt"
+        txt_path.write_text(text or "", encoding="utf-8")
+        return str(txt_path)
+
+    def get_text_path(self, doc_id: str) -> str | None:
+        path = self._base / f"{doc_id}.txt"
+        if path.exists() and path.is_file():
+            return str(path)
+        return None
+
+    def read_text(self, doc_id: str) -> str | None:
+        path = self._base / f"{doc_id}.txt"
+        if path.exists() and path.is_file():
+            return path.read_text(encoding="utf-8")
+        return None
+
     def delete_final(self, doc_id: str, ext: str) -> None:
         path = self._base / f"{doc_id}{ext}"
         try:
             os.remove(str(path))
+        except FileNotFoundError:
+            pass
+        txt_path = self._base / f"{doc_id}.txt"
+        try:
+            os.remove(str(txt_path))
         except FileNotFoundError:
             pass
 

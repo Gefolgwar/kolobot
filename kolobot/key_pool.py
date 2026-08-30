@@ -6,7 +6,7 @@ import asyncio
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 
 class PoolKind(str, Enum):
@@ -121,6 +121,74 @@ class KeyPool:
                     state.cooldown_until = now + cooldown
                 return
             raise KeyError(f"Unknown key for pool {self.kind.value}")
+
+    def update_keys(self, keys: List[str], reset_cooldown: bool = False) -> None:
+        """Update or refresh the key list in the pool."""
+        if not keys:
+            return
+        existing_map = {s.key: s for s in self._states}
+        new_states = []
+        for k in keys:
+            if k in existing_map:
+                st = existing_map[k]
+                if reset_cooldown:
+                    st.cooldown_until = 0.0
+                new_states.append(st)
+            else:
+                new_states.append(_KeyState(key=k))
+        self._states = new_states
+
+    @property
+    def key_count(self) -> int:
+        return len(self._states)
+
+    def get_key_label(self, key: str) -> str:
+        for idx, state in enumerate(self._states, start=1):
+            if state.key == key:
+                masked = f"…{key[-4:]}" if len(key) >= 6 else ""
+                return f"Ключ #{idx}" + (f" ({masked})" if masked else "")
+        masked = f"…{key[-4:]}" if len(key) >= 6 else ""
+        return "Ключ" + (f" ({masked})" if masked else "")
+
+    def get_key_status_list(self) -> List[Dict[str, Any]]:
+        now = self._time()
+        result = []
+        for idx, state in enumerate(self._states, start=1):
+            self._prune(state, now)
+            minute_ago = now - 60
+            rpm_used = sum(1 for t in state.timestamps if t > minute_ago)
+            rpd_used = len(state.timestamps)
+
+            is_cooling = state.cooldown_until > now
+            cooldown_sec = int(state.cooldown_until - now) if is_cooling else 0
+            is_available = self._is_free(state, now)
+
+            masked = f"…{state.key[-4:]}" if len(state.key) >= 6 else ""
+            label = f"Ключ #{idx}" + (f" ({masked})" if masked else "")
+
+            if is_cooling:
+                status_desc = f"❌ Cooldown ({cooldown_sec}с)"
+            elif state.in_flight:
+                status_desc = "⏳ В процесі"
+            elif not self._rpm_ok(state, now):
+                status_desc = f"⚠️ RPM ліміт ({rpm_used}/{self.rpm_limit})"
+            elif not self._rpd_ok(state):
+                status_desc = f"⚠️ RPD ліміт ({rpd_used}/{self.rpd_limit})"
+            else:
+                status_desc = f"✅ Доступний (RPM {rpm_used}/{self.rpm_limit})"
+
+            result.append({
+                "index": idx,
+                "label": label,
+                "is_available": is_available,
+                "is_cooling": is_cooling,
+                "cooldown_sec": cooldown_sec,
+                "in_flight": state.in_flight,
+                "rpm_used": rpm_used,
+                "rpd_used": rpd_used,
+                "status_desc": status_desc,
+            })
+        return result
 
     def status(self) -> Dict[str, object]:
         now = self._time()

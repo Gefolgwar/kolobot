@@ -137,3 +137,71 @@ async def test_embed_texts_invalid_api_key_raises_friendly_error(gen_pool, emb_p
 
     assert "GEMINI_KEYS_EMBED" in str(excinfo.value)
     assert emb_pool.status()["cooldown"] == 1
+
+
+@pytest.mark.asyncio
+async def test_extract_document_multi_key_failover():
+    gen_pool = KeyPool(keys=["bad_key_1", "good_key_2"], kind=PoolKind.GENERATE)
+    emb_pool = KeyPool(keys=["emb_key_1"], kind=PoolKind.EMBED)
+
+    mock_client = AsyncMock()
+    # First key fails with 400 invalid, second key succeeds
+    mock_client.extract.side_effect = [
+        Exception("400 API key not valid"),
+        '{"doc_type": "накладна"}',
+    ]
+
+    status_updates = []
+
+    async def _on_status(msg: str) -> None:
+        status_updates.append(msg)
+
+    gateway = GeminiGateway(
+        gen_pool=gen_pool,
+        emb_pool=emb_pool,
+        client=mock_client,
+    )
+
+    res = await gateway.extract_document(
+        b"img_bytes", "image/jpeg", on_status_update=_on_status
+    )
+
+    assert res == '{"doc_type": "накладна"}'
+    assert mock_client.extract.await_count == 2
+    # bad_key_1 is in cooldown
+    assert gen_pool.status()["cooldown"] == 1
+    # Check that status updates informed about keys
+    assert any("Ключ #1" in u for u in status_updates)
+    assert any("Ключ #2" in u for u in status_updates)
+
+
+@pytest.mark.asyncio
+async def test_embed_texts_multi_key_failover():
+    gen_pool = KeyPool(keys=["gen_key_1"], kind=PoolKind.GENERATE)
+    emb_pool = KeyPool(keys=["bad_emb_1", "good_emb_2"], kind=PoolKind.EMBED)
+
+    mock_client = AsyncMock()
+    mock_client.embed.side_effect = [
+        Exception("429 ResourceExhausted"),
+        [[0.5, 0.6]],
+    ]
+
+    status_updates = []
+
+    async def _on_status(msg: str) -> None:
+        status_updates.append(msg)
+
+    gateway = GeminiGateway(
+        gen_pool=gen_pool,
+        emb_pool=emb_pool,
+        client=mock_client,
+    )
+
+    res = await gateway.embed_texts(["sample text"], on_status_update=_on_status)
+
+    assert res == [[0.5, 0.6]]
+    assert mock_client.embed.await_count == 2
+    assert emb_pool.status()["cooldown"] == 1
+    assert any("Ключ #1" in u for u in status_updates)
+    assert any("Ключ #2" in u for u in status_updates)
+

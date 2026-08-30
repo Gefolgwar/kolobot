@@ -6,32 +6,112 @@ import asyncio
 import html
 import logging
 import os
+import re
 import sys
+import uuid
 from typing import Any
 
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.filters import Command
-from aiogram.types import CallbackQuery, ErrorEvent, FSInputFile, Message
+from aiogram.types import CallbackQuery, ErrorEvent, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from kolobot.archive_service import ArchiveService
 from kolobot.config import ConfigError, load_config
-from kolobot.doc_structurer import DocStructurer, ParseStatus
+from kolobot.doc_structurer import CardViewModel, DocStructurer, Document, normalize_doc_type
 from kolobot.file_store import FileStore
 from kolobot.gemini_gateway import GeminiError, GeminiGateway
-from kolobot.handlers.commands import cmd_status, router as commands_router
+from kolobot.handlers.commands import cmd_clear, cmd_status, router as commands_router
 from kolobot.handlers.list_delete import ListDeleteHandler
 from kolobot.handlers.media import MediaHandler, _ext_from_mime
-from kolobot.hardening import ConfirmTimeoutChecker, QuotaHandler
 from kolobot.key_pool import KeyPool, PoolKind
+from kolobot.log_service import setup_logging_capture
 from kolobot.messages import ACCESS_DENIED_UK
 from kolobot.middlewares.access import AccessMiddleware
+from kolobot.queue_service import DocumentQueueService, PendingCard, QueueItem
 from kolobot.rag_service import RagService
 from kolobot.vector_store import VectorStore
 from kolobot.warehouse_db import WarehouseDB
 
 logger = logging.getLogger(__name__)
+
+
+def h(text: Any) -> str:
+    if not text:
+        return ""
+    return html.escape(str(text))
+
+
+def format_card_text(doc: Document, card: CardViewModel) -> str:
+    """Format a structured document and its card view model into HTML text for Telegram."""
+    lines = [
+        f"<b>{h(card.doc_type).upper()}</b>: {h(card.title)}",
+    ]
+
+    if card.doc_number or card.doc_date:
+        meta_str = []
+        if card.doc_number:
+            meta_str.append(f"№ {h(card.doc_number)}")
+        if card.doc_date:
+            meta_str.append(f"від {h(card.doc_date)}")
+        lines.append("<b>Документ:</b> " + " ".join(meta_str))
+
+    if card.summary:
+        lines.append(f"\n<b>Опис:</b> {h(card.summary)}")
+
+    if card.key_value_pairs:
+        lines.append("\n<b>Основні реквізити:</b>")
+        for kv in card.key_value_pairs:
+            lines.append(f"• <b>{h(kv['key'])}</b>: {h(kv['value'])}")
+
+    if card.items:
+        lines.append("\n<b>Повний перелік товарів / послуг:</b>")
+        for it in card.items:
+            num = h(it.get("num", ""))
+            name = h(it.get("name", ""))
+            qty = h(it.get("quantity", ""))
+            unit = h(it.get("unit", ""))
+            price = h(it.get("price_no_vat", ""))
+            total_val = h(it.get("total_no_vat", ""))
+            details = []
+            if qty or unit:
+                details.append(f"{qty} {unit}".strip())
+            if price:
+                details.append(f"ціна: {price}")
+            if total_val:
+                details.append(f"сума: {total_val}")
+            det_str = f" ({', '.join(details)})" if details else ""
+            num_str = f"{num}. " if num else "• "
+            lines.append(f"  {num_str}<b>{name}</b>{det_str}")
+
+    if card.totals:
+        tot_parts = []
+        if card.totals.get("total_no_vat"):
+            tot_parts.append(f"Без ПДВ: {h(card.totals['total_no_vat'])}")
+        if card.totals.get("vat"):
+            tot_parts.append(f"ПДВ: {h(card.totals['vat'])}")
+        if card.totals.get("total_with_vat"):
+            tot_parts.append(f"Всього з ПДВ: {h(card.totals['total_with_vat'])}")
+        if tot_parts:
+            lines.append("\n<b>Підсумкові суми:</b>\n" + "\n".join(f"• {p}" for p in tot_parts))
+
+    if getattr(doc, "raw_text", None):
+        lines.append(f"\n<b>Повний розпізнаний текст:</b>\n<i>{h(doc.raw_text)}</i>")
+
+    full_text = "\n".join(line for line in lines if line)
+    if len(full_text) > 4000:
+        full_text = full_text[:3950] + "\n\n<i>... [текст скорочено через ліміт Telegram (4000 символів)]</i>"
+
+    return full_text
+
+
+def make_card_keyboard(card_id: str) -> InlineKeyboardMarkup:
+    """Create inline keyboard for a specific pending card."""
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="Зберегти", callback_data=f"confirm_save:{card_id}"),
+        InlineKeyboardButton(text="Відхилити", callback_data=f"confirm_reject:{card_id}"),
+    ]])
 
 
 async def send_archive_file(
@@ -85,12 +165,6 @@ async def send_archive_file(
     return False
 
 
-def h(text: Any) -> str:
-    if not text:
-        return ""
-    return html.escape(str(text))
-
-
 def _sync_chroma_with_warehouse(
     vs: "VectorStore",
     wdb: WarehouseDB,
@@ -119,6 +193,75 @@ def _sync_chroma_with_warehouse(
         logger.info("Startup sync: removed %d orphaned ChromaDB records.", len(orphans))
 
 
+def _detect_doc_type_and_op(doc: Any) -> tuple[str, str]:
+    """
+    Returns (doc_type_label, default_op).
+    doc_type_label: 'ВИМОГА', 'НАКЛАДНА', or custom uppercase string.
+    default_op: 'expense', 'income', or ''.
+    """
+    raw_doc_type = (getattr(doc, "doc_type", "") or "").strip().lower()
+    title = (getattr(doc, "title", "") or "").strip().lower()
+    summary = (getattr(doc, "summary", "") or "").strip().lower()
+    raw_text = (getattr(doc, "raw_text", "") or "").strip().lower()
+    header_lines = "\n".join(raw_text.splitlines()[:5])
+
+    # Priority 1: Check header lines of raw text for clear printed document title
+    if re.search(r"\bвимога\b", header_lines) or re.search(r"\bакт\s+списанн", header_lines):
+        return "ВИМОГА", "expense"
+    if (
+        re.search(r"\bнакладна\b", header_lines)
+        or re.search(r"\bприбутков", header_lines)
+        or re.search(r"\bвидатков", header_lines)
+        or re.search(r"\bтоварна\b", header_lines)
+        or re.search(r"\bттн\b", header_lines)
+    ):
+        return "НАКЛАДНА", "income"
+
+    # Priority 2: Check explicit title
+    if "вимога" in title or "списанн" in title:
+        return "ВИМОГА", "expense"
+    if (
+        "накладна" in title
+        or "прибутков" in title
+        or "видатков" in title
+        or "товарна" in title
+        or "ттн" in title
+    ):
+        return "НАКЛАДНА", "income"
+
+    # Priority 3: Check summary
+    if "вимога" in summary or "списанн" in summary:
+        return "ВИМОГА", "expense"
+    if "накладна" in summary or "прибутков" in summary or "видатков" in summary:
+        return "НАКЛАДНА", "income"
+
+    # Priority 4: Direct match if doc_type was already set/normalized
+    if raw_doc_type == "вимога":
+        return "ВИМОГА", "expense"
+    if raw_doc_type == "накладна":
+        return "НАКЛАДНА", "income"
+    if "вимога" in raw_doc_type or "списанн" in raw_doc_type:
+        return "ВИМОГА", "expense"
+    if "накладна" in raw_doc_type or "прибутков" in raw_doc_type or "видатков" in raw_doc_type:
+        return "НАКЛАДНА", "income"
+
+    # Priority 5: Full raw text search
+    if (
+        re.search(r"\bвимога\s*№", raw_text)
+        or re.search(r"\bвимога-накладна", raw_text)
+        or re.search(r"\bакт\s+списанн", raw_text)
+    ):
+        return "ВИМОГА", "expense"
+    if (
+        re.search(r"\bнакладна\s*№", raw_text)
+        or re.search(r"\bприбуткова\s+накладна", raw_text)
+        or re.search(r"\bвидаткова\s+накладна", raw_text)
+    ):
+        return "НАКЛАДНА", "income"
+
+    return raw_doc_type.upper() if raw_doc_type else "", ""
+
+
 def _save_to_warehouse(
     wdb: WarehouseDB,
     fs: FileStore,
@@ -131,18 +274,14 @@ def _save_to_warehouse(
     ext = pending.get("ext", ".jpg")
 
     file_path = fs.get_final_path(archive_doc_id, ext=ext) or ""
+    raw_text = getattr(doc, "raw_text", "")
+    if archive_doc_id and raw_text:
+        try:
+            fs.save_text(archive_doc_id, raw_text)
+        except Exception:
+            pass
 
-    raw_doc_type = (getattr(doc, "doc_type", "") or "").strip().lower()
-    raw_text_lower = (getattr(doc, "raw_text", "") or "").lower()
-    if "накладна" in raw_doc_type or raw_doc_type == "invoice" or "накладна" in raw_text_lower:
-        doc_type_label = "НАКЛАДНА"
-        default_op = "income"
-    elif "вимога" in raw_doc_type or "вимога" in raw_text_lower:
-        doc_type_label = "ВИМОГА"
-        default_op = "expense"
-    else:
-        doc_type_label = raw_doc_type.upper() if raw_doc_type else ""
-        default_op = ""
+    doc_type_label, default_op = _detect_doc_type_and_op(doc)
 
     wh_doc_id = wdb.add_document(
         filename=file_name,
@@ -150,7 +289,7 @@ def _save_to_warehouse(
         file_path=file_path,
         doc_number=getattr(doc, "doc_number", ""),
         doc_date=getattr(doc, "doc_date", ""),
-        raw_text=getattr(doc, "raw_text", ""),
+        raw_text=raw_text,
         doc_type=doc_type_label,
     )
 
@@ -196,11 +335,24 @@ def _save_to_warehouse(
                     else:
                         op_type = "income"
 
+                num_str = str(it.get("num", "") or "").strip()
+                unit_str = str(it.get("unit", "") or "").strip()
+                src_parts = []
+                if num_str:
+                    src_parts.append(f"Поз. {num_str}")
+                if sku:
+                    src_parts.append(sku)
+                src_parts.append(name)
+                if unit_str:
+                    src_parts.append(unit_str)
+                source_row = " | ".join(src_parts)
+
                 wdb.add_transaction(
                     item_id=item_id, document_id=wh_doc_id,
                     operation_type=op_type, quantity=qty,
                     doc_number=getattr(doc, "doc_number", ""),
                     doc_date=getattr(doc, "doc_date", ""),
+                    source_row=source_row,
                 )
                 txs += 1
 
@@ -232,6 +384,7 @@ def _save_to_warehouse(
         except ValueError:
             exp_qty = 0
 
+        source_row = f"{sku} | {name}" if sku else name
         if default_op:
             total_qty = inc_qty + exp_qty
             if total_qty > 0:
@@ -240,6 +393,7 @@ def _save_to_warehouse(
                     operation_type=default_op, quantity=total_qty,
                     doc_number=getattr(doc, "doc_number", ""),
                     doc_date=getattr(doc, "doc_date", ""),
+                    source_row=source_row,
                 )
                 txs += 1
         else:
@@ -249,6 +403,7 @@ def _save_to_warehouse(
                     operation_type="income", quantity=inc_qty,
                     doc_number=getattr(doc, "doc_number", ""),
                     doc_date=getattr(doc, "doc_date", ""),
+                    source_row=source_row,
                 )
                 txs += 1
             if exp_qty > 0:
@@ -257,6 +412,7 @@ def _save_to_warehouse(
                     operation_type="expense", quantity=exp_qty,
                     doc_number=getattr(doc, "doc_number", ""),
                     doc_date=getattr(doc, "doc_date", ""),
+                    source_row=source_row,
                 )
                 txs += 1
 
@@ -320,18 +476,58 @@ def build_app():
         file_store=file_store,
         owner_user_id=settings.owner_user_id,
     )
-    timeout_checker = ConfirmTimeoutChecker(timeout_sec=settings.confirm_timeout_sec)
-    quota_handler = QuotaHandler()
 
-    # Pending OCR state (single-flight)
-    pending_doc = {}
+    bot = Bot(
+        token=settings.bot_token,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+    )
+
+    async def _on_card_ready(pending_card: PendingCard) -> None:
+        full_text = format_card_text(pending_card.doc, pending_card.card)
+        kb = make_card_keyboard(pending_card.card_id)
+
+        if pending_card.item.status_message_id is not None:
+            try:
+                await bot.edit_message_text(
+                    chat_id=pending_card.item.chat_id,
+                    message_id=pending_card.item.status_message_id,
+                    text=full_text,
+                    reply_markup=kb,
+                )
+                return
+            except Exception as exc:
+                logger.debug("Failed to edit Telegram status message %s: %s", pending_card.item.status_message_id, exc)
+
+        try:
+            await bot.send_message(
+                chat_id=pending_card.item.chat_id,
+                text=full_text,
+                reply_markup=kb,
+            )
+        except Exception as exc:
+            logger.error("Failed to send card message to chat %s: %s", pending_card.item.chat_id, exc)
+
+    queue_service = DocumentQueueService(
+        gateway=gateway,
+        doc_structurer=doc_structurer,
+        file_store=file_store,
+        bot=bot,
+        on_card_ready=_on_card_ready,
+    )
+
+    dedup_pending: dict[str, dict] = {}
 
     # --- Router wiring ---
     rt = Router(name="app")
 
     @rt.message(Command("status"))
     async def _status(message: Message):
-        await cmd_status(message, gen_pool=gen_pool, emb_pool=emb_pool)
+        await cmd_status(
+            message,
+            gen_pool=gen_pool,
+            emb_pool=emb_pool,
+            queue_service=queue_service,
+        )
 
     @rt.message(Command("list"))
     async def _list(message: Message):
@@ -351,17 +547,12 @@ def build_app():
         else:
             await message.answer(result.error or "Помилка видалення.")
 
+    @rt.message(Command("clear"))
+    async def _clear(message: Message):
+        await cmd_clear(message, queue_service=queue_service)
+
     @rt.message(F.photo | F.document)
     async def _media(message: Message):
-        # Check confirm timeout
-        if timeout_checker.is_expired():
-            timeout_checker.clear()
-            media_handler.clear_pending()
-            if pending_doc.get("tmp_path"):
-                file_store.delete_tmp(pending_doc["tmp_path"])
-            pending_doc.clear()
-            await message.answer("Попереднє підтвердження протерміноване — можеш надіслати нове зображення.")
-
         intake = await media_handler.handle_media(message)
         if intake is None:
             return
@@ -372,162 +563,92 @@ def build_app():
             file_unique_id=intake["file_unique_id"],
         )
         if existing is not None:
-            from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-
+            dedup_id = uuid.uuid4().hex[:8]
+            dedup_pending[dedup_id] = intake
             kb = InlineKeyboardMarkup(inline_keyboard=[[
                 InlineKeyboardButton(text="Відкрити старий", callback_data=f"dedup_open:{existing['id']}"),
-                InlineKeyboardButton(text="Все одно зберегти", callback_data="dedup_force"),
+                InlineKeyboardButton(text="Все одно зберегти", callback_data=f"dedup_force:{dedup_id}"),
             ]])
-            media_handler.clear_pending()
-            pending_doc.update(intake)
-            pending_doc["dedup_existing"] = existing
             await message.answer("Цей файл вже є в архіві.", reply_markup=kb)
             return
 
-        await _run_ocr(message, intake)
+        # Unsaved cards reminder
+        pending_count = queue_service.get_pending_card_count(user_id=settings.owner_user_id)
+        if pending_count > 0:
+            await message.answer(f"ℹ️ Зверни увагу: у тебе є {pending_count} незбережених карток на підтвердження.")
 
-    async def _run_ocr(message: Message, intake: dict):
-        await message.answer("Розпізнаю…")
+        status_msg = await message.answer("Розпізнаю…")
+        status_id = getattr(status_msg, "message_id", None)
 
-        try:
-            raw_io = await message.bot.download(intake["file_id"])
-            image_bytes = raw_io.read() if hasattr(raw_io, "read") else raw_io
-        except Exception:
-            await message.answer("Помилка завантаження файлу.")
-            media_handler.clear_pending()
-            return
-
-        # Save actual bytes to tmp
-        import os
-        tmp_path = intake["tmp_path"]
-        with open(tmp_path, "wb") as f:
-            f.write(image_bytes)
-
-        quota_result = await quota_handler.with_retry(
-            fn=lambda: gateway.extract_document(image_bytes, intake["mime"], tmp_path),
-            max_wait=5.0,
+        item = QueueItem(
+            file_id=intake["file_id"],
+            file_unique_id=intake["file_unique_id"],
+            mime=intake["mime"],
+            file_size=intake["file_size"],
+            tmp_path=intake["tmp_path"],
+            chat_id=message.chat.id,
+            user_id=message.from_user.id if message.from_user else settings.owner_user_id,
+            status_message_id=status_id,
+            source=intake["source"],
+            file_name=intake.get("file_name"),
+            ext=intake.get("ext", ".jpg"),
         )
-        if quota_result.exhausted:
-            await message.answer(quota_result.message)
-            media_handler.clear_pending()
-            file_store.delete_tmp(tmp_path)
-            return
+        await queue_service.enqueue(item)
 
-        model_text = quota_result.value
-        result = doc_structurer.parse(model_text)
-
-        if result.status == ParseStatus.NEEDS_RETRY:
-            quota_result2 = await quota_handler.with_retry(
-                fn=lambda: gateway.extract_document(image_bytes, intake["mime"], tmp_path),
-                max_wait=5.0,
-            )
-            if quota_result2.exhausted:
-                await message.answer(quota_result2.message)
-                media_handler.clear_pending()
-                file_store.delete_tmp(tmp_path)
-                return
-            result = doc_structurer.parse(quota_result2.value, is_retry=True)
-
-        if result.doc is None or result.doc.is_empty:
-            await message.answer(
-                "Не вдалося розпізнати текст. Спробуй надіслати чіткіше зображення."
-            )
-            media_handler.clear_pending()
-            file_store.delete_tmp(tmp_path)
-            return
-
-        card = doc_structurer.to_card(result.doc)
-        timeout_checker.mark_pending()
-        pending_doc.update(intake)
-        pending_doc["doc"] = result.doc
-
-        doc = result.doc
-        lines = [
-            f"<b>{h(card.doc_type).upper()}</b>: {h(card.title)}",
-        ]
-
-        if card.doc_number or card.doc_date:
-            meta_str = []
-            if card.doc_number:
-                meta_str.append(f"№ {h(card.doc_number)}")
-            if card.doc_date:
-                meta_str.append(f"від {h(card.doc_date)}")
-            lines.append("<b>Документ:</b> " + " ".join(meta_str))
-
-        if card.summary:
-            lines.append(f"\n<b>Опис:</b> {h(card.summary)}")
-
-        if card.key_value_pairs:
-            lines.append("\n<b>Основні реквізити:</b>")
-            for kv in card.key_value_pairs:
-                lines.append(f"• <b>{h(kv['key'])}</b>: {h(kv['value'])}")
-
-        if card.items:
-            lines.append("\n<b>Повний перелік товарів / послуг:</b>")
-            for it in card.items:
-                num = h(it.get("num", ""))
-                name = h(it.get("name", ""))
-                qty = h(it.get("quantity", ""))
-                unit = h(it.get("unit", ""))
-                price = h(it.get("price_no_vat", ""))
-                total_val = h(it.get("total_no_vat", ""))
-                details = []
-                if qty or unit:
-                    details.append(f"{qty} {unit}".strip())
-                if price:
-                    details.append(f"ціна: {price}")
-                if total_val:
-                    details.append(f"сума: {total_val}")
-                det_str = f" ({', '.join(details)})" if details else ""
-                num_str = f"{num}. " if num else "• "
-                lines.append(f"  {num_str}<b>{name}</b>{det_str}")
-
-        if card.totals:
-            tot_parts = []
-            if card.totals.get("total_no_vat"):
-                tot_parts.append(f"Без ПДВ: {h(card.totals['total_no_vat'])}")
-            if card.totals.get("vat"):
-                tot_parts.append(f"ПДВ: {h(card.totals['vat'])}")
-            if card.totals.get("total_with_vat"):
-                tot_parts.append(f"Всього з ПДВ: {h(card.totals['total_with_vat'])}")
-            if tot_parts:
-                lines.append("\n<b>Підсумкові суми:</b>\n" + "\n".join(f"• {p}" for p in tot_parts))
-
-        if getattr(doc, "raw_text", None):
-            lines.append(f"\n<b>Повний розпізнаний текст:</b>\n<i>{h(doc.raw_text)}</i>")
-
-        full_text = "\n".join(line for line in lines if line)
-        if len(full_text) > 4000:
-            full_text = full_text[:3950] + "\n\n<i>... [текст скорочено через ліміт Telegram (4000 символів)]</i>"
-
-        from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-
-        kb = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="Зберегти", callback_data="confirm_save"),
-            InlineKeyboardButton(text="Відхилити", callback_data="confirm_reject"),
-        ]])
-        await message.answer(full_text, reply_markup=kb)
-
-    @rt.callback_query(F.data == "confirm_save")
+    @rt.callback_query(F.data.startswith("confirm_save"))
     async def _save(callback: CallbackQuery):
-        doc = pending_doc.get("doc")
-        if doc is None:
-            await callback.answer("Немає активного підтвердження.")
+        if ":" in callback.data:
+            card_id = callback.data.split(":", 1)[1]
+            card = queue_service.get_card(card_id)
+        else:
+            cards = queue_service.list_pending_cards(user_id=settings.owner_user_id)
+            card = cards[0] if cards else None
+            card_id = card.card_id if card else ""
+
+        if card is None:
+            await callback.answer("Ця картка більше не активна (чергу очищено або документ вже оброблено).", show_alert=True)
+            if callback.message:
+                try:
+                    await callback.message.edit_reply_markup(reply_markup=None)
+                except Exception:
+                    pass
             return
+
+        if callback.message:
+            try:
+                await callback.message.edit_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+
+        queue_service.remove_card(card_id)
+        doc = card.doc
+
+        status_msg = None
+
+        async def _on_save_status_update(status_text: str) -> None:
+            nonlocal status_msg
+            if callback.message:
+                try:
+                    if status_msg is None:
+                        status_msg = await callback.message.answer(status_text)
+                    else:
+                        await status_msg.edit_text(status_text)
+                except Exception as exc:
+                    logger.debug("Failed to update save status message: %s", exc)
 
         save_result = await archive_svc.save(
             title=doc.title,
             summary=doc.summary,
             key_value_pairs=doc.key_value_pairs,
             raw_text=doc.raw_text,
-            tmp_path=pending_doc.get("tmp_path", ""),
-            ext=pending_doc.get("ext", ".jpg"),
-            user_id=settings.owner_user_id,
-            telegram_file_id=pending_doc.get("file_id", ""),
-            file_unique_id=pending_doc.get("file_unique_id", ""),
-            file_name=pending_doc.get("file_name"),
-            mime=pending_doc.get("mime", "image/jpeg"),
-            source=pending_doc.get("source", "photo"),
+            tmp_path=card.item.tmp_path,
+            ext=card.item.ext,
+            user_id=card.item.user_id,
+            telegram_file_id=card.item.file_id,
+            file_unique_id=card.item.file_unique_id,
+            file_name=card.item.file_name,
+            mime=card.item.mime,
+            source=card.item.source,
             doc_number=getattr(doc, "doc_number", ""),
             doc_date=getattr(doc, "doc_date", ""),
             items=getattr(doc, "items", []),
@@ -539,21 +660,23 @@ def build_app():
             unit=getattr(doc, "unit", ""),
             supplier=getattr(doc, "supplier", ""),
             notes=getattr(doc, "notes", ""),
+            on_status_update=_on_save_status_update,
         )
 
         warehouse_msg = ""
         if save_result.success:
             try:
+                pending_dict = {
+                    "file_name": card.item.file_name,
+                    "ext": card.item.ext,
+                    "mime": card.item.mime,
+                }
                 warehouse_msg = _save_to_warehouse(
-                    warehouse_db, file_store, doc, pending_doc, save_result.doc_id
+                    warehouse_db, file_store, doc, pending_dict, save_result.doc_id
                 )
             except Exception as exc:
                 logger.warning("Warehouse save failed: %s", exc)
                 warehouse_msg = "\n⚠️ Помилка збереження в складську таблицю."
-
-        media_handler.clear_pending()
-        timeout_checker.clear()
-        pending_doc.clear()
 
         if save_result.success:
             text = f"Збережено (id: <code>{save_result.doc_id}</code>)."
@@ -561,34 +684,68 @@ def build_app():
                 text += "\n⚠️ Локальна копія не збережена, але документ в архіві."
             if warehouse_msg:
                 text += "\n" + warehouse_msg
-            await callback.message.answer(text)
+            if callback.message:
+                if status_msg is not None:
+                    try:
+                        await status_msg.edit_text(text)
+                    except Exception:
+                        await callback.message.answer(text)
+                else:
+                    await callback.message.answer(text)
         else:
-            await callback.message.answer(
-                f"Помилка збереження: {save_result.error}"
-            )
+            if callback.message:
+                err_text = f"Помилка збереження: {save_result.error}"
+                if status_msg is not None:
+                    try:
+                        await status_msg.edit_text(err_text)
+                    except Exception:
+                        await callback.message.answer(err_text)
+                else:
+                    await callback.message.answer(err_text)
         await callback.answer()
 
-    @rt.callback_query(F.data == "confirm_reject")
+    @rt.callback_query(F.data.startswith("confirm_reject"))
     async def _reject(callback: CallbackQuery):
-        tmp = pending_doc.get("tmp_path")
-        if tmp:
-            file_store.delete_tmp(tmp)
-        media_handler.clear_pending()
-        timeout_checker.clear()
-        pending_doc.clear()
-        await callback.message.answer("Відхилено — тимчасовий файл видалено.")
+        if ":" in callback.data:
+            card_id = callback.data.split(":", 1)[1]
+            card = queue_service.get_card(card_id)
+        else:
+            cards = queue_service.list_pending_cards(user_id=settings.owner_user_id)
+            card = cards[0] if cards else None
+            card_id = card.card_id if card else ""
+
+        if card is None:
+            await callback.answer("Ця картка більше не активна (чергу очищено або документ вже оброблено).", show_alert=True)
+            if callback.message:
+                try:
+                    await callback.message.edit_reply_markup(reply_markup=None)
+                except Exception:
+                    pass
+            return
+
+        if callback.message:
+            try:
+                await callback.message.edit_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+
+        queue_service.remove_card(card_id)
+        if card.item.tmp_path and os.path.exists(card.item.tmp_path):
+            try:
+                file_store.delete_tmp(card.item.tmp_path)
+            except Exception as exc:
+                logger.warning("Failed to delete tmp file %s: %s", card.item.tmp_path, exc)
+
+        if callback.message:
+            await callback.message.answer("Відхилено — тимчасовий файл видалено.")
         await callback.answer()
 
     @rt.callback_query(F.data.startswith("dedup_open:"))
     async def _dedup_open(callback: CallbackQuery):
         doc_id = callback.data.split(":", 1)[1]
-        existing = pending_doc.get("dedup_existing")
-        meta = existing.get("metadata", {}) if existing else {}
-        if not meta:
-            doc = vector_store.get(doc_id)
-            if doc:
-                meta = doc.get("metadata", {})
-        if meta:
+        doc = vector_store.get(doc_id)
+        meta = doc.get("metadata", {}) if doc else {}
+        if meta and callback.message:
             await send_archive_file(
                 message=callback.message,
                 file_store=file_store,
@@ -596,24 +753,62 @@ def build_app():
                 metadata=meta,
                 error_text="Не вдалося надіслати оригінал.",
             )
-        else:
+        elif callback.message:
             await callback.message.answer("Не вдалося надіслати оригінал.")
-        pending_doc.clear()
+
+        if callback.message:
+            try:
+                await callback.message.edit_reply_markup(reply_markup=None)
+            except Exception:
+                pass
         await callback.answer()
 
-    @rt.callback_query(F.data == "dedup_force")
+    @rt.callback_query(F.data.startswith("dedup_force"))
     async def _dedup_force(callback: CallbackQuery):
-        intake = {k: v for k, v in pending_doc.items() if k != "dedup_existing"}
-        pending_doc.clear()
-        media_handler._pending = True
+        parts = callback.data.split(":", 1)
+        if len(parts) > 1:
+            dedup_id = parts[1]
+            intake = dedup_pending.pop(dedup_id, None)
+        else:
+            intake = next(iter(dedup_pending.values()), None) if dedup_pending else None
+            dedup_pending.clear()
+
+        if callback.message:
+            try:
+                await callback.message.edit_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+
+        if intake and callback.message:
+            pending_count = queue_service.get_pending_card_count(user_id=settings.owner_user_id)
+            if pending_count > 0:
+                await callback.message.answer(f"ℹ️ Зверни увагу: у тебе є {pending_count} незбережених карток на підтвердження.")
+
+            status_msg = await callback.message.answer("Розпізнаю…")
+            status_id = getattr(status_msg, "message_id", None)
+
+            item = QueueItem(
+                file_id=intake["file_id"],
+                file_unique_id=intake["file_unique_id"],
+                mime=intake["mime"],
+                file_size=intake["file_size"],
+                tmp_path=intake["tmp_path"],
+                chat_id=callback.message.chat.id,
+                user_id=callback.from_user.id if callback.from_user else settings.owner_user_id,
+                status_message_id=status_id,
+                source=intake["source"],
+                file_name=intake.get("file_name"),
+                ext=intake.get("ext", ".jpg"),
+            )
+            await queue_service.enqueue(item)
+
         await callback.answer()
-        await _run_ocr(callback.message, intake)
 
     @rt.callback_query(F.data.startswith("file:"))
     async def _send_file(callback: CallbackQuery):
         doc_id = callback.data.split(":", 1)[1]
         doc = vector_store.get(doc_id)
-        if doc:
+        if doc and callback.message:
             await send_archive_file(
                 message=callback.message,
                 file_store=file_store,
@@ -621,7 +816,7 @@ def build_app():
                 metadata=doc.get("metadata", {}),
                 error_text="Не вдалося надіслати файл.",
             )
-        else:
+        elif callback.message:
             await callback.message.answer("Не вдалося надіслати файл.")
         await callback.answer()
 
@@ -631,18 +826,20 @@ def build_app():
         result = await list_delete.delete_doc(
             doc_id=doc_id, user_id=settings.owner_user_id
         )
-        if result.success:
-            await callback.message.answer("Видалено.")
-        else:
-            await callback.message.answer(result.error or "Помилка.")
+        if callback.message:
+            if result.success:
+                await callback.message.answer("Видалено.")
+            else:
+                await callback.message.answer(result.error or "Помилка.")
         await callback.answer()
 
     @rt.callback_query(F.data == "del_no")
     async def _del_cancel(callback: CallbackQuery):
-        await callback.message.answer("Скасовано.")
+        if callback.message:
+            await callback.message.answer("Скасовано.")
         await callback.answer()
 
-    @rt.message(~Command("start", "help", "status", "list", "delete"))
+    @rt.message(~Command("start", "help", "status", "list", "delete", "clear"))
     async def _text(message: Message):
         if message.photo or message.document:
             return
@@ -661,8 +858,6 @@ def build_app():
             await message.answer("Не знайшов відповідної інформації в архіві.")
             return
 
-        from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-
         buttons = []
         for src in rag_result.sources:
             buttons.append([InlineKeyboardButton(
@@ -674,9 +869,11 @@ def build_app():
 
     # --- Build dispatcher ---
     dp = Dispatcher()
+    dp["queue_service"] = queue_service
     access = AccessMiddleware(owner_user_id=settings.owner_user_id)
     dp.message.middleware(access)
     dp.callback_query.middleware(access)
+    commands_router._parent_router = None
     dp.include_router(commands_router)
     dp.include_router(rt)
 
@@ -721,11 +918,6 @@ def build_app():
 
         return True
 
-    bot = Bot(
-        token=settings.bot_token,
-        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
-    )
-
     # Startup: GC tmp
     file_store.gc_tmp()
     logger.info("Startup tmp GC done.")
@@ -752,6 +944,7 @@ async def run() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    setup_logging_capture()
     try:
         dp, bot, settings = build_app()
     except ConfigError as exc:
@@ -762,11 +955,17 @@ async def run() -> None:
     if web_server:
         await web_server.start()
 
+    queue_service: DocumentQueueService = dp.get("queue_service") or dp.workflow_data.get("queue_service")
+    if queue_service:
+        await queue_service.start()
+
     logger.info("kolobot starting for owner_user_id=%s, model=%s",
                 settings.owner_user_id, settings.generate_model)
     try:
         await dp.start_polling(bot)
     finally:
+        if queue_service:
+            await queue_service.stop()
         if web_server:
             await web_server.stop()
 

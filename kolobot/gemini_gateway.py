@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
-from typing import Any, List, Optional
+import logging
+import os
+from typing import Any, Awaitable, Callable, List, Optional
 
-from kolobot.key_pool import KeyPool
+from kolobot.key_pool import KeyPool, KeyPoolExhausted
+
+logger = logging.getLogger(__name__)
 
 OCR_PROMPT = (
     "Extract structured metadata and full text from this image. "
     "Return JSON with the following schema:\n"
     "{\n"
-    '  "doc_type": "receipt|invoice|contract|id_card|note|other",\n'
+    '  "doc_type": "вимога|накладна|receipt|invoice|contract|id_card|note|other",\n'
     '  "title": "Short title describing the document",\n'
     '  "summary": "Brief 1-2 sentence summary of content, including key amounts and main items/services if present",\n'
     '  "key_value_pairs": [{"key": "Field name", "value": "Field value"}],\n'
@@ -23,14 +27,16 @@ OCR_PROMPT = (
     '  "outgoing": "Розхід (кількість, що витрачена, якщо є)",\n'
     '  "balance": "Залишок (якщо вказано в документі)",\n'
     '  "unit": "Одиниці виміру (шт, кг, л, тощо)",\n'
-    '  "doc_number": "Номер накладної або документа (наприклад 3, INV-001)",\n'
+    '  "doc_number": "Номер накладної або документа (наприклад 3, INV-001, 0000215)",\n'
     '  "supplier": "Постачальник або контрагент",\n'
     '  "notes": "Примітки (додаткова важлива інформація)",\n'
     '  "items": [{"num": 1, "nomenclature_number": "355513018010", "name": "Item name", "quantity": "10", "unit": "шт", "price_no_vat": "150.00", "total_no_vat": "1500.00"}],\n'
     '  "totals": {"total_no_vat": "1975.00", "vat": "395.00", "total_with_vat": "2370.00"}\n'
     "}\n\n"
-    "IMPORTANT FOR INVENTORY FIELDS:\n"
+    "IMPORTANT FOR INVENTORY AND DOCUMENT TYPE:\n"
+    "- For 'doc_type': determine the document type strictly from the actual printed title/header at the top of the document (top-left or centered header). If the printed header says 'НАКЛАДНА' (or 'Прибуткова накладна', 'Видаткова накладна', 'ТТН', etc.), set 'doc_type' to 'накладна'. If the printed header says 'ВИМОГА' (or 'Вимога-накладна', 'Акт списання', etc.), set 'doc_type' to 'вимога'. Otherwise use 'receipt', 'contract', 'id_card', 'note', or 'other'. Do NOT set 'вимога' if the document header is titled 'НАКЛАДНА'.\n"
     "- Extract 'nomenclature_number', 'item_name', 'doc_date', 'incoming', 'outgoing', 'balance', 'unit', 'doc_number', 'supplier', 'notes' based on the main content of the document.\n"
+    "- If the document is a 'вимога' (expense/видача/відпуск), the issued quantities go to 'outgoing' (Розхід). If the document is a 'накладна' (income/прихід), the incoming quantities go to 'incoming' (Прихід).\n"
     "- These fields will be displayed as a single row in an inventory ledger.\n"
     "- If a field is not present, leave it as an empty string.\n\n"
     "IMPORTANT FOR items and totals:\n"
@@ -115,54 +121,202 @@ class GeminiGateway:
         self._generate_model = generate_model
         self._embed_model = embed_model
 
-    async def extract_document(
-        self, image_bytes: bytes, mime: str, file_path: Optional[str] = None
-    ) -> str:
-        key = await self._gen_pool.acquire(wait_sec=5)
+    def reload_keys_from_env(self) -> None:
+        """Reload GEMINI_KEYS_GENERATE and GEMINI_KEYS_EMBED from .env if present."""
         try:
-            result = await self._call_generate(key, image_bytes, mime)
-            await self._gen_pool.release(key, ok=True)
-            return result
+            from dotenv import load_dotenv
+            load_dotenv(override=True)
+            raw_gen = os.getenv("GEMINI_KEYS_GENERATE")
+            if raw_gen:
+                keys = [p.strip().strip("'\"") for p in raw_gen.split(",") if p.strip().strip("'\"")]
+                if keys:
+                    self._gen_pool.update_keys(keys, reset_cooldown=True)
+            raw_emb = os.getenv("GEMINI_KEYS_EMBED")
+            if raw_emb:
+                keys = [p.strip().strip("'\"") for p in raw_emb.split(",") if p.strip().strip("'\"")]
+                if keys:
+                    self._emb_pool.update_keys(keys, reset_cooldown=True)
         except Exception as exc:
-            status = _extract_status(exc)
-            await self._gen_pool.release(key, ok=False, http_status=status)
-            if status in (400, 403) or _is_key_invalid_error(exc):
+            logger.debug("Failed to reload keys from env: %s", exc)
+
+    async def extract_document(
+        self,
+        image_bytes: bytes,
+        mime: str,
+        file_path: Optional[str] = None,
+        on_status_update: Optional[Callable[[str], Awaitable[None]]] = None,
+    ) -> str:
+        max_attempts = max(1, self._gen_pool.key_count)
+        last_exc: Optional[Exception] = None
+
+        for attempt in range(max_attempts):
+            try:
+                key = await self._gen_pool.acquire(wait_sec=5 if attempt == 0 else 0)
+            except KeyPoolExhausted as exc:
+                if attempt == 0:
+                    self.reload_keys_from_env()
+                    try:
+                        key = await self._gen_pool.acquire(wait_sec=0)
+                    except KeyPoolExhausted:
+                        raise GeminiError(
+                            "Недійсний API ключ (API key not valid). Перевірте GEMINI_KEYS_GENERATE у файлі .env."
+                        ) from exc
+                else:
+                    break
+
+            key_label = self._gen_pool.get_key_label(key)
+            if on_status_update:
+                try:
+                    await on_status_update(f"🔍 Розпізнаю через {key_label}...")
+                except Exception as cb_err:
+                    logger.debug("Status update callback error: %s", cb_err)
+
+            try:
+                result = await self._call_generate(key, image_bytes, mime)
+                await self._gen_pool.release(key, ok=True)
+                return result
+            except Exception as exc:
+                last_exc = exc
+                status = _extract_status(exc)
+                await self._gen_pool.release(key, ok=False, http_status=status)
+                logger.warning(
+                    "Generation failed with %s: %s. %s",
+                    key_label,
+                    exc,
+                    "Trying next key in pool..." if attempt < max_attempts - 1 else "No more keys available.",
+                )
+                if on_status_update and attempt < max_attempts - 1:
+                    try:
+                        await on_status_update(f"⚠️ {key_label} недоступний. Перемикаюсь на наступний ключ...")
+                    except Exception:
+                        pass
+
+        if last_exc is not None:
+            status = _extract_status(last_exc)
+            if status in (400, 403) or _is_key_invalid_error(last_exc):
                 raise GeminiError(
                     "Недійсний API ключ (API key not valid). Перевірте GEMINI_KEYS_GENERATE у файлі .env."
-                ) from exc
-            raise GeminiError(str(exc)) from exc
+                ) from last_exc
+            raise GeminiError(str(last_exc)) from last_exc
 
-    async def embed_texts(self, texts: List[str]) -> List[List[float]]:
-        key = await self._emb_pool.acquire(wait_sec=5)
-        try:
-            result = await self._call_embed(key, texts)
-            await self._emb_pool.release(key, ok=True)
-            return result
-        except Exception as exc:
-            status = _extract_status(exc)
-            await self._emb_pool.release(key, ok=False, http_status=status)
-            if status in (400, 403) or _is_key_invalid_error(exc):
+        raise GeminiError(
+            "Недійсний API ключ (API key not valid). Перевірте GEMINI_KEYS_GENERATE у файлі .env."
+        )
+
+    async def embed_texts(
+        self,
+        texts: List[str],
+        on_status_update: Optional[Callable[[str], Awaitable[None]]] = None,
+    ) -> List[List[float]]:
+        max_attempts = max(1, self._emb_pool.key_count)
+        last_exc: Optional[Exception] = None
+
+        for attempt in range(max_attempts):
+            try:
+                key = await self._emb_pool.acquire(wait_sec=5 if attempt == 0 else 0)
+            except KeyPoolExhausted as exc:
+                if attempt == 0:
+                    self.reload_keys_from_env()
+                    try:
+                        key = await self._emb_pool.acquire(wait_sec=0)
+                    except KeyPoolExhausted:
+                        raise GeminiError(
+                            "Недійсний API ключ для ембеддінгів (GEMINI_KEYS_EMBED). Перевірте ключ у файлі .env."
+                        ) from exc
+                else:
+                    break
+
+            key_label = self._emb_pool.get_key_label(key)
+            if on_status_update:
+                try:
+                    await on_status_update(f"💾 Ембеддінг через {key_label}...")
+                except Exception as cb_err:
+                    logger.debug("Status update callback error: %s", cb_err)
+
+            try:
+                result = await self._call_embed(key, texts)
+                await self._emb_pool.release(key, ok=True)
+                return result
+            except Exception as exc:
+                last_exc = exc
+                status = _extract_status(exc)
+                await self._emb_pool.release(key, ok=False, http_status=status)
+                logger.warning(
+                    "Embedding failed with %s: %s. %s",
+                    key_label,
+                    exc,
+                    "Trying next key in pool..." if attempt < max_attempts - 1 else "No more keys available.",
+                )
+                if on_status_update and attempt < max_attempts - 1:
+                    try:
+                        await on_status_update(f"⚠️ {key_label} недоступний. Перемикаюсь на наступний ключ ембеддінгів...")
+                    except Exception:
+                        pass
+
+        if last_exc is not None:
+            status = _extract_status(last_exc)
+            if status in (400, 403) or _is_key_invalid_error(last_exc):
                 raise GeminiError(
                     "Недійсний API ключ для ембеддінгів (GEMINI_KEYS_EMBED). Перевірте ключ у файлі .env."
-                ) from exc
-            raise GeminiError(str(exc)) from exc
+                ) from last_exc
+            raise GeminiError(str(last_exc)) from last_exc
+
+        raise GeminiError(
+            "Недійсний API ключ для ембеддінгів (GEMINI_KEYS_EMBED). Перевірте ключ у файлі .env."
+        )
 
     async def answer_with_context(
-        self, question: str, contexts: List[str]
+        self,
+        question: str,
+        contexts: List[str],
+        on_status_update: Optional[Callable[[str], Awaitable[None]]] = None,
     ) -> str:
-        key = await self._gen_pool.acquire(wait_sec=5)
-        try:
-            result = await self._call_answer(key, question, contexts)
-            await self._gen_pool.release(key, ok=True)
-            return result
-        except Exception as exc:
-            status = _extract_status(exc)
-            await self._gen_pool.release(key, ok=False, http_status=status)
-            if status in (400, 403) or _is_key_invalid_error(exc):
+        max_attempts = max(1, self._gen_pool.key_count)
+        last_exc: Optional[Exception] = None
+
+        for attempt in range(max_attempts):
+            try:
+                key = await self._gen_pool.acquire(wait_sec=5 if attempt == 0 else 0)
+            except KeyPoolExhausted as exc:
+                if attempt == 0:
+                    self.reload_keys_from_env()
+                    try:
+                        key = await self._gen_pool.acquire(wait_sec=0)
+                    except KeyPoolExhausted:
+                        raise GeminiError(
+                            "Недійсний API ключ (API key not valid). Перевірте GEMINI_KEYS_GENERATE у файлі .env."
+                        ) from exc
+                else:
+                    break
+
+            key_label = self._gen_pool.get_key_label(key)
+
+            try:
+                result = await self._call_answer(key, question, contexts)
+                await self._gen_pool.release(key, ok=True)
+                return result
+            except Exception as exc:
+                last_exc = exc
+                status = _extract_status(exc)
+                await self._gen_pool.release(key, ok=False, http_status=status)
+                logger.warning(
+                    "Answer generation failed with %s: %s. %s",
+                    key_label,
+                    exc,
+                    "Trying next key in pool..." if attempt < max_attempts - 1 else "No more keys available.",
+                )
+
+        if last_exc is not None:
+            status = _extract_status(last_exc)
+            if status in (400, 403) or _is_key_invalid_error(last_exc):
                 raise GeminiError(
                     "Недійсний API ключ (API key not valid). Перевірте GEMINI_KEYS_GENERATE у файлі .env."
-                ) from exc
-            raise GeminiError(str(exc)) from exc
+                ) from last_exc
+            raise GeminiError(str(last_exc)) from last_exc
+
+        raise GeminiError(
+            "Недійсний API ключ (API key not valid). Перевірте GEMINI_KEYS_GENERATE у файлі .env."
+        )
 
     async def _call_generate(self, key: str, image_bytes: bytes, mime: str) -> str:
         if self._client is None:

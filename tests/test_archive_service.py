@@ -25,6 +25,7 @@ def service(deps):
         gateway=gateway,
         vector_store=vector_store,
         file_store=file_store,
+        retry_delays=(),
     )
 
 
@@ -170,3 +171,96 @@ async def test_lookup_duplicate_returns_none_when_missing(deps):
     vector_store.find_by_file_unique_id.return_value = None
     svc = ArchiveService(gateway=gateway, vector_store=vector_store, file_store=file_store)
     assert svc.lookup_duplicate(user_id=42, file_unique_id="nope") is None
+
+
+@pytest.mark.asyncio
+async def test_save_retry_success_after_transient_failures(deps):
+    gateway, vector_store, file_store = deps
+    attempts = 0
+
+    async def flaky_embed(texts):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise RuntimeError(f"Embedding transient error attempt {attempts}")
+        return [[0.1] * 768]
+
+    gateway.embed_texts = AsyncMock(side_effect=flaky_embed)
+    status_updates = []
+
+    async def on_status_update(txt: str):
+        status_updates.append(txt)
+
+    svc = ArchiveService(
+        gateway=gateway,
+        vector_store=vector_store,
+        file_store=file_store,
+        retry_delays=(0.01, 0.02, 0.03),
+    )
+
+    result = await svc.save(
+        title="Retry Test",
+        summary="Sum",
+        key_value_pairs=[],
+        raw_text="raw",
+        tmp_path="/tmp/x.jpg",
+        ext=".jpg",
+        user_id=42,
+        telegram_file_id="fid",
+        file_unique_id="uid",
+        file_name="img.jpg",
+        mime="image/jpeg",
+        source="photo",
+        on_status_update=on_status_update,
+    )
+
+    assert result.success is True
+    assert attempts == 3
+    assert len(status_updates) == 2
+    assert "Спроба 1/3" in status_updates[0]
+    assert "Спроба 2/3" in status_updates[1]
+    vector_store.upsert.assert_called_once()
+    file_store.promote.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_save_retry_exhausted_failures_returns_error(deps):
+    gateway, vector_store, file_store = deps
+    error_msg = "Недійсний API ключ для ембеддінгів (GEMINI_KEYS_EMBED). Перевірте ключ у файлі .env."
+    gateway.embed_texts = AsyncMock(side_effect=RuntimeError(error_msg))
+    status_updates = []
+
+    async def on_status_update(txt: str):
+        status_updates.append(txt)
+
+    svc = ArchiveService(
+        gateway=gateway,
+        vector_store=vector_store,
+        file_store=file_store,
+        retry_delays=(0.01, 0.02, 0.03),
+    )
+
+    result = await svc.save(
+        title="Retry Fail Test",
+        summary="Sum",
+        key_value_pairs=[],
+        raw_text="raw",
+        tmp_path="/tmp/x.jpg",
+        ext=".jpg",
+        user_id=42,
+        telegram_file_id="fid",
+        file_unique_id="uid",
+        file_name="img.jpg",
+        mime="image/jpeg",
+        source="photo",
+        on_status_update=on_status_update,
+    )
+
+    assert result.success is False
+    assert error_msg in result.error
+    assert len(status_updates) == 3
+    assert "Спроба 1/3" in status_updates[0]
+    assert "Спроба 2/3" in status_updates[1]
+    assert "Спроба 3/3" in status_updates[2]
+    vector_store.upsert.assert_not_called()
+    file_store.promote.assert_not_called()

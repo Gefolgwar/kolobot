@@ -50,8 +50,20 @@ def test_delete_tmp_ignores_missing(store: FileStore):
 def test_delete_final_removes_file(store: FileStore, tmp_path: Path):
     tmp = store.save_tmp(b"y", ext=".webp")
     final = store.promote(tmp, doc_id="d001", ext=".webp")
+    store.save_text("d001", "Розпізнаний текст документа")
+    assert os.path.exists(tmp_path / "d001.txt")
     store.delete_final("d001", ext=".webp")
     assert not os.path.exists(final)
+    assert not os.path.exists(tmp_path / "d001.txt")
+
+
+def test_save_and_read_text(store: FileStore, tmp_path: Path):
+    txt_path = store.save_text("doc123", "Текст накладної № 45")
+    assert os.path.isfile(txt_path)
+    assert store.get_text_path("doc123") == txt_path
+    assert store.read_text("doc123") == "Текст накладної № 45"
+    assert store.read_text("nonexistent") is None
+    assert store.get_text_path("nonexistent") is None
 
 
 def test_delete_final_ignores_missing(store: FileStore):

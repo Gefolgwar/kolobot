@@ -228,3 +228,33 @@ async def test_400_invalid_key_puts_key_in_long_cooldown():
     await pool.release(k2, ok=True)
     next_key = await pool.acquire()
     assert next_key == "good_key"  # bad_key still in cooldown
+
+
+@pytest.mark.asyncio
+async def test_key_labels_and_status_list():
+    clock = FakeClock()
+    pool = KeyPool(
+        keys=["key_alpha_1234", "key_beta_5678", "key_gamma_9012"],
+        kind=PoolKind.GENERATE,
+        rpm_limit=15,
+        rpd_limit=1500,
+        cooldown_sec=60,
+        time_fn=clock.time,
+    )
+
+    assert pool.key_count == 3
+    assert pool.get_key_label("key_alpha_1234") == "Ключ #1 (…1234)"
+    assert pool.get_key_label("key_beta_5678") == "Ключ #2 (…5678)"
+    assert pool.get_key_label("key_gamma_9012") == "Ключ #3 (…9012)"
+
+    k1 = await pool.acquire()
+    await pool.release(k1, ok=False, http_status=429)
+
+    status_list = pool.get_key_status_list()
+    assert len(status_list) == 3
+    assert status_list[0]["index"] == 1
+    assert status_list[0]["is_cooling"] is True
+    assert "Cooldown" in status_list[0]["status_desc"]
+    assert status_list[1]["is_available"] is True
+    assert "Доступний" in status_list[1]["status_desc"]
+

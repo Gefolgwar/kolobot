@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 import sqlite3
 import time
 from pathlib import Path
@@ -130,6 +131,163 @@ class WarehouseDB:
                 return dict(row)
         return None
 
+    def get_item(self, item_id: int) -> Optional[Dict[str, Any]]:
+        row = self._conn.execute(
+            "SELECT * FROM warehouse_items WHERE id = ?", (item_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def get_or_create_manual_document(self) -> int:
+        row = self._conn.execute(
+            "SELECT id FROM documents WHERE file_type = 'manual' AND doc_type = 'РУЧНЕ_КОРИГУВАННЯ' ORDER BY id ASC LIMIT 1"
+        ).fetchone()
+        if row:
+            return row["id"]
+        return self.add_document(
+            filename="Ручне редагування (Користувач)",
+            file_type="manual",
+            doc_type="РУЧНЕ_КОРИГУВАННЯ",
+            raw_text="Системний документ для ручних коригувань позицій та залишків",
+        )
+
+    def adjust_item_field(
+        self,
+        item_id: int,
+        field: str,
+        new_value: str,
+        comment: str = "",
+    ) -> Optional[Dict[str, Any]]:
+        field_labels = {
+            "name": "Найменування",
+            "sku": "Номенклатурний номер",
+            "unit": "Од. виміру",
+            "supplier": "Постачальник",
+            "notes": "Примітки",
+        }
+        if field not in field_labels:
+            raise ValueError(f"Invalid field: {field}. Allowed: {list(field_labels.keys())}")
+
+        item = self.get_item(item_id)
+        if not item:
+            return None
+
+        old_value = item.get(field) or ""
+        new_val_str = str(new_value or "").strip()
+
+        # Update item
+        self._conn.execute(
+            f"UPDATE warehouse_items SET {field} = ? WHERE id = ?",
+            (new_val_str, item_id),
+        )
+        self._conn.commit()
+
+        # Create zero-quantity audit record
+        doc_id = self.get_or_create_manual_document()
+        label = field_labels[field]
+        source_row = f"Змінено [{label}]: '{old_value}' → '{new_val_str}'"
+        if comment and comment.strip():
+            source_row += f" ({comment.strip()})"
+
+        doc_date = datetime.date.today().strftime("%d.%m.%Y")
+        tx_id = self.add_transaction(
+            item_id=item_id,
+            document_id=doc_id,
+            operation_type="income",
+            quantity=0.0,
+            doc_number="",
+            doc_date=doc_date,
+            source_row=source_row,
+        )
+
+        updated_item = self.get_item(item_id)
+        return {
+            "success": True,
+            "item": updated_item,
+            "old_value": old_value,
+            "new_value": new_val_str,
+            "source_row": source_row,
+            "transaction_id": tx_id,
+        }
+
+    def get_item_balance(self, item_id: int) -> Optional[float]:
+        item = self.get_item(item_id)
+        if not item:
+            return None
+        row = self._conn.execute("""
+            SELECT
+                COALESCE(SUM(CASE WHEN operation_type = 'income' THEN quantity ELSE 0 END), 0) -
+                COALESCE(SUM(CASE WHEN operation_type = 'expense' THEN quantity ELSE 0 END), 0) AS balance
+            FROM warehouse_transactions
+            WHERE item_id = ?
+        """, (item_id,)).fetchone()
+        return float(row["balance"]) if row else 0.0
+
+    def adjust_item_quantity(
+        self,
+        item_id: int,
+        target_quantity: float,
+        comment: str = "",
+    ) -> Optional[Dict[str, Any]]:
+        item = self.get_item(item_id)
+        if not item:
+            return None
+
+        current_balance = self.get_item_balance(item_id)
+        if current_balance is None:
+            current_balance = 0.0
+
+        target_qty = float(target_quantity)
+        delta = target_qty - current_balance
+
+        def _fmt(val: float) -> str:
+            return str(int(val)) if val == int(val) else str(val)
+
+        old_bal_str = _fmt(current_balance)
+        target_str = _fmt(target_qty)
+        source_row = f"Змінено 'Кількість': {old_bal_str} → {target_str}"
+        if comment and comment.strip():
+            source_row += f" ({comment.strip()})"
+
+        if abs(delta) < 1e-9:
+            return {
+                "success": True,
+                "item_id": item_id,
+                "old_balance": current_balance,
+                "target_quantity": target_qty,
+                "delta": 0.0,
+                "operation_type": None,
+                "transaction_id": None,
+                "source_row": source_row,
+                "item": item,
+            }
+
+        operation_type = "income" if delta > 0 else "expense"
+        quantity = abs(delta)
+        doc_id = self.get_or_create_manual_document()
+        doc_date = datetime.date.today().strftime("%d.%m.%Y")
+
+        tx_id = self.add_transaction(
+            item_id=item_id,
+            document_id=doc_id,
+            operation_type=operation_type,
+            quantity=quantity,
+            doc_number="",
+            doc_date=doc_date,
+            source_row=source_row,
+        )
+
+        return {
+            "success": True,
+            "item_id": item_id,
+            "old_balance": current_balance,
+            "target_quantity": target_qty,
+            "delta": delta,
+            "operation_type": operation_type,
+            "transaction_id": tx_id,
+            "source_row": source_row,
+            "item": item,
+        }
+
     def update_item(self, item_id: int, **kwargs: Any) -> None:
         allowed = {"sku", "name", "unit", "supplier", "notes"}
         updates = {k: v for k, v in kwargs.items() if k in allowed and v}
@@ -167,9 +325,11 @@ class WarehouseDB:
                 COALESCE(SUM(CASE WHEN wt.operation_type = 'income' THEN wt.quantity ELSE 0 END), 0) AS total_income,
                 COALESCE(SUM(CASE WHEN wt.operation_type = 'expense' THEN wt.quantity ELSE 0 END), 0) AS total_expense,
                 MAX(wt.doc_date) AS last_doc_date,
-                MAX(wt.doc_number) AS last_doc_number
+                MAX(wt.doc_number) AS last_doc_number,
+                COUNT(DISTINCT CASE WHEN d.file_type != 'manual' THEN wt.document_id END) AS doc_count
             FROM warehouse_items wi
             LEFT JOIN warehouse_transactions wt ON wi.id = wt.item_id
+            LEFT JOIN documents d ON wt.document_id = d.id
             GROUP BY wi.id
             ORDER BY wi.name
         """).fetchall()
@@ -207,7 +367,7 @@ class WarehouseDB:
         rows = self._conn.execute("""
             SELECT
                 d.id, d.filename, d.file_type, d.file_path, d.uploaded_at,
-                d.doc_number, d.doc_date, d.doc_type,
+                d.doc_number, d.doc_date, d.doc_type, d.raw_text,
                 COUNT(wt.id) AS transaction_count
             FROM documents d
             LEFT JOIN warehouse_transactions wt ON d.id = wt.document_id
