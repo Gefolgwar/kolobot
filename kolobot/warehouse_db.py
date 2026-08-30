@@ -48,7 +48,8 @@ class WarehouseDB:
                 name TEXT NOT NULL,
                 unit TEXT NOT NULL DEFAULT '',
                 supplier TEXT NOT NULL DEFAULT '',
-                notes TEXT NOT NULL DEFAULT ''
+                notes TEXT NOT NULL DEFAULT '',
+                min_balance REAL NOT NULL DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS warehouse_transactions (
@@ -81,6 +82,11 @@ class WarehouseDB:
         if "source_row" not in tx_cols:
             self._conn.execute("ALTER TABLE warehouse_transactions ADD COLUMN source_row TEXT NOT NULL DEFAULT ''")
 
+        cursor = self._conn.execute("PRAGMA table_info(warehouse_items)")
+        item_cols = {row[1] for row in cursor.fetchall()}
+        if "min_balance" not in item_cols:
+            self._conn.execute("ALTER TABLE warehouse_items ADD COLUMN min_balance REAL NOT NULL DEFAULT 0")
+
         self._conn.commit()
 
     def add_document(
@@ -108,10 +114,11 @@ class WarehouseDB:
         unit: str = "",
         supplier: str = "",
         notes: str = "",
+        min_balance: float = 0.0,
     ) -> int:
         cur = self._conn.execute(
-            "INSERT INTO warehouse_items (sku, name, unit, supplier, notes) VALUES (?, ?, ?, ?, ?)",
-            (sku, name, unit, supplier, notes),
+            "INSERT INTO warehouse_items (sku, name, unit, supplier, notes, min_balance) VALUES (?, ?, ?, ?, ?, ?)",
+            (sku, name, unit, supplier, notes, min_balance),
         )
         self._conn.commit()
         return cur.lastrowid
@@ -154,7 +161,7 @@ class WarehouseDB:
         self,
         item_id: int,
         field: str,
-        new_value: str,
+        new_value: Any,
         comment: str = "",
     ) -> Optional[Dict[str, Any]]:
         field_labels = {
@@ -163,6 +170,7 @@ class WarehouseDB:
             "unit": "Од. виміру",
             "supplier": "Постачальник",
             "notes": "Примітки",
+            "min_balance": "Мінімальний залишок",
         }
         if field not in field_labels:
             raise ValueError(f"Invalid field: {field}. Allowed: {list(field_labels.keys())}")
@@ -171,20 +179,36 @@ class WarehouseDB:
         if not item:
             return None
 
-        old_value = item.get(field) or ""
-        new_val_str = str(new_value or "").strip()
+        old_value = item.get(field)
+        if old_value is None:
+            old_value = ""
+
+        if field == "min_balance":
+            try:
+                new_val_num = float(new_value) if new_value not in (None, "") else 0.0
+                if new_val_num < 0:
+                    new_val_num = 0.0
+            except (ValueError, TypeError):
+                new_val_num = 0.0
+            new_val_store = new_val_num
+            new_val_str = str(int(new_val_num)) if new_val_num == int(new_val_num) else str(new_val_num)
+            old_val_str = str(int(old_value)) if isinstance(old_value, (int, float)) and old_value == int(old_value) else str(old_value)
+        else:
+            new_val_store = str(new_value or "").strip()
+            new_val_str = new_val_store
+            old_val_str = str(old_value)
 
         # Update item
         self._conn.execute(
             f"UPDATE warehouse_items SET {field} = ? WHERE id = ?",
-            (new_val_str, item_id),
+            (new_val_store, item_id),
         )
         self._conn.commit()
 
         # Create zero-quantity audit record
         doc_id = self.get_or_create_manual_document()
         label = field_labels[field]
-        source_row = f"Змінено [{label}]: '{old_value}' → '{new_val_str}'"
+        source_row = f"Змінено [{label}]: '{old_val_str}' → '{new_val_str}'"
         if comment and comment.strip():
             source_row += f" ({comment.strip()})"
 
@@ -204,7 +228,7 @@ class WarehouseDB:
             "success": True,
             "item": updated_item,
             "old_value": old_value,
-            "new_value": new_val_str,
+            "new_value": new_val_store,
             "source_row": source_row,
             "transaction_id": tx_id,
         }
@@ -289,8 +313,8 @@ class WarehouseDB:
         }
 
     def update_item(self, item_id: int, **kwargs: Any) -> None:
-        allowed = {"sku", "name", "unit", "supplier", "notes"}
-        updates = {k: v for k, v in kwargs.items() if k in allowed and v}
+        allowed = {"sku", "name", "unit", "supplier", "notes", "min_balance"}
+        updates = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
         if not updates:
             return
         set_clause = ", ".join(f"{k} = ?" for k in updates)
@@ -321,7 +345,7 @@ class WarehouseDB:
     def get_items_with_balance(self) -> List[Dict[str, Any]]:
         rows = self._conn.execute("""
             SELECT
-                wi.id, wi.sku, wi.name, wi.unit, wi.supplier, wi.notes,
+                wi.id, wi.sku, wi.name, wi.unit, wi.supplier, wi.notes, wi.min_balance,
                 COALESCE(SUM(CASE WHEN wt.operation_type = 'income' THEN wt.quantity ELSE 0 END), 0) AS total_income,
                 COALESCE(SUM(CASE WHEN wt.operation_type = 'expense' THEN wt.quantity ELSE 0 END), 0) AS total_expense,
                 MAX(wt.doc_date) AS last_doc_date,

@@ -277,3 +277,48 @@ def test_get_items_with_balance_doc_count(warehouse_db):
     assert items_map[item3_id]["doc_count"] == 0
 
 
+def test_adjust_item_field_min_balance(warehouse_db):
+    item_id = warehouse_db.add_item(
+        name="Гайка М8",
+        sku="NUT-M8",
+        min_balance=0.0,
+    )
+
+    # 1. Adjust min_balance to 25.0
+    res = warehouse_db.adjust_item_field(item_id=item_id, field="min_balance", new_value=25.0, comment="Норма запасу")
+    assert res is not None
+    assert res["success"] is True
+    assert res["new_value"] == 25.0
+    assert "Змінено [Мінімальний залишок]: '0' → '25'" in res["source_row"]
+    assert "Норма запасу" in res["source_row"]
+
+    # 2. Check item from find_item and get_item
+    item = warehouse_db.get_item(item_id)
+    assert item["min_balance"] == 25.0
+
+    # 3. Check get_items_with_balance
+    items = warehouse_db.get_items_with_balance()
+    assert len(items) == 1
+    assert items[0]["min_balance"] == 25.0
+
+    # 4. Check audit transaction
+    txs = warehouse_db.get_item_transactions(item_id)
+    assert len(txs) == 1
+    assert txs[0]["doc_type"] == "РУЧНЕ_КОРИГУВАННЯ"
+    assert txs[0]["quantity"] == 0.0
+
+
+def test_add_item_with_min_balance(warehouse_db):
+    item_id = warehouse_db.add_item(
+        name="Шайба М10",
+        sku="WASH-10",
+        min_balance=100.0,
+    )
+    item = warehouse_db.get_item(item_id)
+    assert item["min_balance"] == 100.0
+
+    items = warehouse_db.get_items_with_balance()
+    assert items[0]["min_balance"] == 100.0
+
+
+

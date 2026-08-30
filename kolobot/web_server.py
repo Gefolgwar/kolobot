@@ -106,6 +106,10 @@ HTML_PAGE = r"""<!DOCTYPE html>
             </div>
             <div class="flex items-center gap-2 flex-wrap">
                 <span class="text-xs text-slate-500 mr-0.5"><i class="fa-solid fa-filter"></i></span>
+                <button onclick="setFilter('below-min')" id="filter-below-min" class="px-2.5 py-1 text-xs font-medium rounded-lg border border-slate-700/60 text-slate-400 bg-slate-900/50 hover:bg-slate-800/80 transition flex items-center gap-1.5">
+                    <i class="fa-solid fa-triangle-exclamation text-rose-400"></i> Менше мінімального залишку
+                    <span id="filter-below-min-count" class="px-1.5 py-0.5 bg-slate-800 rounded text-[10px] min-w-[20px] text-center">0</span>
+                </button>
                 <button onclick="setFilter('negative')" id="filter-negative" class="px-2.5 py-1 text-xs font-medium rounded-lg border border-slate-700/60 text-slate-400 bg-slate-900/50 hover:bg-slate-800/80 transition flex items-center gap-1.5">
                     <i class="fa-solid fa-arrow-trend-down"></i> Від'ємний залишок
                     <span id="filter-negative-count" class="px-1.5 py-0.5 bg-slate-800 rounded text-[10px] min-w-[20px] text-center">0</span>
@@ -136,13 +140,14 @@ HTML_PAGE = r"""<!DOCTYPE html>
                             <th class="py-4 px-3">Прихід</th>
                             <th class="py-4 px-3">Розхід</th>
                             <th class="py-4 px-3">Залишок</th>
+                            <th class="py-4 px-3">Мін. залишок</th>
                             <th class="py-4 px-3">Од.виміру</th>
                             <th class="py-4 px-3">Постачальник</th>
                             <th class="py-4 px-3">Примітки</th>
                         </tr>
                     </thead>
                     <tbody id="items-tbody" class="divide-y divide-slate-800/60 text-sm">
-                        <tr><td colspan="9" class="py-12 text-center text-slate-500">
+                        <tr><td colspan="10" class="py-12 text-center text-slate-500">
                             <i class="fa-solid fa-boxes-stacked text-2xl mb-2 text-slate-600"></i>
                             <p>Склад порожній. Завантажте Excel файл для початку роботи.</p>
                         </td></tr>
@@ -499,16 +504,27 @@ function renderItems(items) {
     const tbody = document.getElementById('items-tbody');
     document.getElementById('visible-items').innerText = items.length;
     if (items.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="9" class="py-12 text-center text-slate-500"><i class="fa-solid fa-boxes-stacked text-2xl mb-2 text-slate-600"></i><p>Склад порожній.</p></td></tr>';
+        tbody.innerHTML = '<tr><td colspan="10" class="py-12 text-center text-slate-500"><i class="fa-solid fa-boxes-stacked text-2xl mb-2 text-slate-600"></i><p>Склад порожній.</p></td></tr>';
         return;
     }
     let html = '';
     items.forEach(it => {
         const bal = it.balance || 0;
-        const balClass = bal > 0 ? 'text-blue-400' : (bal < 0 ? 'text-red-400' : 'text-slate-500');
+        const minBal = (it.min_balance !== null && it.min_balance !== undefined) ? Number(it.min_balance) : 0;
+        const isBelowMin = minBal > 0 && bal < minBal;
+
+        let rowClass = 'hover:bg-slate-800/40 transition cursor-pointer group';
+        if (isBelowMin) {
+            rowClass = 'bg-rose-950/40 hover:bg-rose-900/50 border-l-4 border-l-rose-500 transition cursor-pointer group shadow-[inset_0_0_20px_rgba(244,63,94,0.15)] text-rose-100';
+        }
+
+        const balClass = isBelowMin ? 'text-rose-400 font-bold' : (bal > 0 ? 'text-blue-400 font-bold' : (bal < 0 ? 'text-red-400 font-bold' : 'text-slate-500 font-bold'));
+        const minBalClass = isBelowMin ? 'text-rose-300 font-bold' : 'text-slate-400';
+        const minBalDisplay = minBal > 0 ? fmtNum(minBal) : '<span class="text-slate-600">—</span>';
+
         html += `
-        <tr class="hover:bg-slate-800/40 transition cursor-pointer group" onclick="toggleTransactions(${it.id})">
-            <td class="py-4 px-3"><i id="chevron-${it.id}" class="fa-solid fa-chevron-right text-[10px] text-slate-500 transition-transform"></i></td>
+        <tr class="${rowClass}" onclick="toggleTransactions(${it.id})">
+            <td class="py-4 px-3"><i id="chevron-${it.id}" class="fa-solid fa-chevron-right text-[10px] ${isBelowMin ? 'text-rose-400' : 'text-slate-500'} transition-transform"></i></td>
             <td class="py-4 px-3 font-mono text-xs text-slate-400">
                 <div class="flex items-center justify-between gap-1">
                     <span id="item-sku-${it.id}">${esc(it.sku)}</span>
@@ -517,9 +533,9 @@ function renderItems(items) {
                     </button>
                 </div>
             </td>
-            <td class="py-4 px-3 font-medium text-slate-200">
+            <td class="py-4 px-3 font-medium ${isBelowMin ? 'text-rose-100 font-semibold' : 'text-slate-200'}">
                 <div class="flex items-center justify-between gap-1">
-                    <span id="item-name-${it.id}">${esc(it.name)}</span>
+                    <span id="item-name-${it.id}">${esc(it.name)} ${isBelowMin ? '<i class="fa-solid fa-triangle-exclamation text-rose-400 text-xs ml-1" title="Залишок менше мінімального!"></i>' : ''}</span>
                     <button onclick="event.stopPropagation(); openEditModal(${it.id}, 'name', '${esc(it.name)}', 'Найменування')" class="text-slate-500 hover:text-blue-400 p-1 rounded transition opacity-0 hover:opacity-100 group-hover:opacity-100" title="Редагувати найменування">
                         <i class="fa-solid fa-pencil text-[10px]"></i>
                     </button>
@@ -527,10 +543,18 @@ function renderItems(items) {
             </td>
             <td class="py-4 px-3 text-emerald-400 font-medium">${fmtNum(it.total_income)}</td>
             <td class="py-4 px-3 text-rose-400 font-medium">${fmtNum(it.total_expense)}</td>
-            <td class="py-4 px-3 ${balClass} font-bold">
+            <td class="py-4 px-3 ${balClass}">
                 <div class="flex items-center justify-between gap-1">
                     <span id="item-balance-${it.id}">${fmtNum(bal)}</span>
                     <button onclick="event.stopPropagation(); openEditModal(${it.id}, 'balance', '${bal}', 'Залишок (кількість)')" class="text-slate-500 hover:text-blue-400 p-1 rounded transition opacity-0 hover:opacity-100 group-hover:opacity-100" title="Редагувати залишок">
+                        <i class="fa-solid fa-pencil text-[10px]"></i>
+                    </button>
+                </div>
+            </td>
+            <td class="py-4 px-3 ${minBalClass}">
+                <div class="flex items-center justify-between gap-1">
+                    <span id="item-min-balance-${it.id}">${minBalDisplay}</span>
+                    <button onclick="event.stopPropagation(); openEditModal(${it.id}, 'min_balance', '${minBal > 0 ? minBal : ''}', 'Мінімальний залишок')" class="text-slate-500 hover:text-blue-400 p-1 rounded transition opacity-0 hover:opacity-100 group-hover:opacity-100" title="Встановити мінімальний залишок">
                         <i class="fa-solid fa-pencil text-[10px]"></i>
                     </button>
                 </div>
@@ -561,7 +585,7 @@ function renderItems(items) {
             </td>
         </tr>
         <tr id="tx-row-${it.id}" class="hidden">
-            <td colspan="9" class="p-0">
+            <td colspan="10" class="p-0">
                 <div class="expand-row px-8 py-3 border-t border-slate-800/40">
                     <div id="tx-content-${it.id}" class="text-xs text-slate-400">Завантаження...</div>
                 </div>
@@ -580,17 +604,33 @@ function openEditModal(itemId, field, currentVal, fieldLabel) {
     currentEditItemId = itemId;
     currentEditField = field;
     const isQty = (field === 'balance' || field === 'quantity');
-    document.getElementById('edit-modal-title').textContent = isQty ? 'Коригування залишку' : ('Редагувати: ' + (fieldLabel || field));
-    document.getElementById('edit-field-label').textContent = isQty ? 'Новий залишок (цільова кількість):' : ('Нове значення (' + (fieldLabel || field) + '):');
-    document.getElementById('edit-current-value').textContent = (currentVal !== '' && currentVal !== null && currentVal !== undefined) ? currentVal : '(порожньо)';
-    const inputVal = document.getElementById('edit-new-value');
+    const isMinBal = (field === 'min_balance');
     if (isQty) {
+        document.getElementById('edit-modal-title').textContent = 'Коригування залишку';
+        document.getElementById('edit-field-label').textContent = 'Новий залишок (цільова кількість):';
+    } else if (isMinBal) {
+        document.getElementById('edit-modal-title').textContent = 'Мінімальний залишок';
+        document.getElementById('edit-field-label').textContent = 'Мінімальний залишок на складі:';
+    } else {
+        document.getElementById('edit-modal-title').textContent = 'Редагувати: ' + (fieldLabel || field);
+        document.getElementById('edit-field-label').textContent = 'Нове значення (' + (fieldLabel || field) + '):';
+    }
+    document.getElementById('edit-current-value').textContent = (currentVal !== '' && currentVal !== null && currentVal !== undefined) ? currentVal : '(не встановлено)';
+    const inputVal = document.getElementById('edit-new-value');
+    if (isQty || isMinBal) {
         inputVal.type = 'number';
         inputVal.step = 'any';
-        inputVal.placeholder = 'Введіть новий залишок...';
+        if (isMinBal) {
+            inputVal.min = '0';
+            inputVal.placeholder = 'Введіть мінімальний залишок (напр. 10)...';
+        } else {
+            inputVal.removeAttribute('min');
+            inputVal.placeholder = 'Введіть новий залишок...';
+        }
     } else {
         inputVal.type = 'text';
         inputVal.removeAttribute('step');
+        inputVal.removeAttribute('min');
         inputVal.placeholder = 'Введіть нове значення...';
     }
     inputVal.value = (currentVal !== null && currentVal !== undefined) ? currentVal : '';
@@ -655,6 +695,7 @@ async function submitEditField() {
         }
 
         // Re-render filtered items immediately
+        updateFilterCounts();
         filterItems();
 
         // If transaction row is currently expanded, reload transactions
@@ -795,7 +836,12 @@ function filterItems() {
     const q = document.getElementById('search-items').value.toLowerCase().trim();
     let filtered = allItems;
 
-    if (activeFilter === 'negative') {
+    if (activeFilter === 'below-min') {
+        filtered = filtered.filter(it => {
+            const minBal = (it.min_balance !== null && it.min_balance !== undefined) ? Number(it.min_balance) : 0;
+            return minBal > 0 && (it.balance || 0) < minBal;
+        });
+    } else if (activeFilter === 'negative') {
         filtered = filtered.filter(it => (it.balance || 0) < 0);
     } else if (activeFilter === 'no-docs') {
         filtered = filtered.filter(it => (it.doc_count || 0) === 0);
@@ -840,7 +886,7 @@ function setFilter(filter) {
 }
 
 function updateFilterUI() {
-    ['negative', 'no-docs', 'dup-names', 'zeros'].forEach(f => {
+    ['below-min', 'negative', 'no-docs', 'dup-names', 'zeros'].forEach(f => {
         const btn = document.getElementById('filter-' + f);
         if (!btn) return;
         if (f === activeFilter) {
@@ -854,6 +900,13 @@ function updateFilterUI() {
 }
 
 function updateFilterCounts() {
+    const belowMinCount = allItems.filter(it => {
+        const minBal = (it.min_balance !== null && it.min_balance !== undefined) ? Number(it.min_balance) : 0;
+        return minBal > 0 && (it.balance || 0) < minBal;
+    }).length;
+    const belowMinEl = document.getElementById('filter-below-min-count');
+    if (belowMinEl) belowMinEl.textContent = belowMinCount;
+
     const negCount = allItems.filter(it => (it.balance || 0) < 0).length;
     document.getElementById('filter-negative-count').textContent = negCount;
 
@@ -1852,7 +1905,7 @@ class WebServer:
         value = data.get("value")
         comment = data.get("comment", "")
 
-        allowed_fields = {"name", "sku", "unit", "supplier", "notes", "balance", "quantity"}
+        allowed_fields = {"name", "sku", "unit", "supplier", "notes", "balance", "quantity", "min_balance"}
         if not field:
             matching_fields = [k for k in data.keys() if k in allowed_fields]
             if len(matching_fields) == 1:
@@ -1873,6 +1926,30 @@ class WebServer:
         item = self._db.get_item(item_id)
         if not item:
             return web.json_response({"error": "Позицію не знайдено"}, status=404)
+
+        if field == "min_balance":
+            try:
+                min_val = float(value) if value not in (None, "") else 0.0
+                if min_val < 0:
+                    min_val = 0.0
+            except (ValueError, TypeError):
+                return web.json_response({"error": "Значення мінімального залишку має бути числом"}, status=400)
+
+            try:
+                result = self._db.adjust_item_field(
+                    item_id=item_id,
+                    field="min_balance",
+                    new_value=min_val,
+                    comment=str(comment or ""),
+                )
+            except Exception as exc:
+                logger.error("Error adjusting item min_balance: %s", exc)
+                return web.json_response({"error": f"Помилка оновлення: {exc}"}, status=400)
+
+            if not result:
+                return web.json_response({"error": "Позицію не знайдено"}, status=404)
+
+            return web.json_response(result)
 
         if field in {"balance", "quantity"}:
             try:
@@ -2109,16 +2186,23 @@ class WebServer:
 
         for i, row in enumerate(rows, 1):
             logger.info("[Excel Import] Обробка рядка %d/%d: %s", i, len(rows), row.get("name", ""))
+            min_bal_val = row.get("min_balance")
+            min_bal = float(min_bal_val) if min_bal_val is not None else 0.0
             existing = self._db.find_item(sku=row.get("sku", ""), name=row["name"])
             if existing:
                 item_id = existing["id"]
                 items_updated += 1
+                update_kwargs: dict[str, Any] = {
+                    "sku": row.get("sku", ""),
+                    "unit": row.get("unit", ""),
+                    "supplier": row.get("supplier", ""),
+                    "notes": row.get("notes", ""),
+                }
+                if min_bal_val is not None:
+                    update_kwargs["min_balance"] = min_bal
                 self._db.update_item(
                     item_id,
-                    sku=row.get("sku", ""),
-                    unit=row.get("unit", ""),
-                    supplier=row.get("supplier", ""),
-                    notes=row.get("notes", ""),
+                    **update_kwargs,
                 )
             else:
                 item_id = self._db.add_item(
@@ -2127,6 +2211,7 @@ class WebServer:
                     unit=row.get("unit", ""),
                     supplier=row.get("supplier", ""),
                     notes=row.get("notes", ""),
+                    min_balance=min_bal,
                 )
                 items_created += 1
 

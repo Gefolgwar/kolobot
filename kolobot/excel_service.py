@@ -33,6 +33,11 @@ HEADER_MAP = {
     "кількість": "income",
     "ціна": "price",
     "сума": "total",
+    "мінімальний залишок": "min_balance",
+    "мін. залишок": "min_balance",
+    "мін залишок": "min_balance",
+    "min_balance": "min_balance",
+    "min balance": "min_balance",
 }
 
 DOC_TYPE_KEYWORDS = {
@@ -90,7 +95,7 @@ def parse_excel(file_path: str) -> tuple[str, List[Dict[str, Any]]]:
     for row_idx, row in enumerate(ws.iter_rows(min_row=header_row_idx + 1, values_only=False), start=header_row_idx + 1):
         record: Dict[str, Any] = {
             "name": "", "sku": "", "doc_date": "", "income": None,
-            "expense": None, "balance": None, "unit": "", "doc_number": "",
+            "expense": None, "balance": None, "min_balance": None, "unit": "", "doc_number": "",
             "supplier": "", "notes": "", "doc_type": "", "price": None, "total": None,
         }
         has_data = False
@@ -100,7 +105,7 @@ def parse_excel(file_path: str) -> tuple[str, List[Dict[str, Any]]]:
                 record[field] = cell.value
                 if field == "name" and str(cell.value).strip():
                     has_data = True
-                if field in ("income", "expense", "balance") and cell.value:
+                if field in ("income", "expense", "balance", "min_balance") and cell.value:
                     has_data = True
 
         if has_data and record["name"]:
@@ -122,7 +127,7 @@ def parse_excel(file_path: str) -> tuple[str, List[Dict[str, Any]]]:
                 source_parts.append(record["unit"])
             record["source_row"] = f"Рядок {row_idx}: " + " | ".join(source_parts)
 
-            for num_field in ("income", "expense", "balance", "price", "total"):
+            for num_field in ("income", "expense", "balance", "min_balance", "price", "total"):
                 val = record[num_field]
                 if val is not None:
                     try:
@@ -146,12 +151,12 @@ def export_excel(items: List[Dict[str, Any]]) -> bytes:
 
     headers = [
         "Номенклатурний номер", "Найменування", "Дата", "Прихід",
-        "Розхід", "Залишок", "Од.виміру", "№ накл.",
+        "Розхід", "Залишок", "Мін. залишок", "Од.виміру", "№ накл.",
         "Постачальник", "Примітки",
     ]
     field_keys = [
         "sku", "name", "last_doc_date", "total_income",
-        "total_expense", "balance", "unit", "last_doc_number",
+        "total_expense", "balance", "min_balance", "unit", "last_doc_number",
         "supplier", "notes",
     ]
 
@@ -179,7 +184,7 @@ def export_excel(items: List[Dict[str, Any]]) -> bytes:
             cell = ws.cell(row=row_idx, column=col_idx, value=val)
             cell.border = thin_border
 
-    col_widths = [22, 45, 14, 10, 10, 10, 12, 12, 25, 20]
+    col_widths = [22, 45, 14, 10, 10, 10, 14, 12, 12, 25, 20]
     for i, w in enumerate(col_widths, start=1):
         ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
 

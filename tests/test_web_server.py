@@ -859,3 +859,131 @@ async def test_document_inspection_multi_item_edit_integration(warehouse_env):
         await client.close()
         db.close()
 
+
+@pytest.mark.asyncio
+async def test_web_server_index_min_balance_column_and_filter(warehouse_env):
+    db, fs, vs = warehouse_env
+    server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
+    client = TestClient(TestServer(server._app))
+    await client.start_server()
+
+    try:
+        resp = await client.get("/")
+        assert resp.status == 200
+        text = await resp.text()
+        assert "Мін. залишок" in text
+        assert "filter-below-min" in text
+        assert "filter-below-min-count" in text
+        assert "Менше мінімального залишку" in text
+    finally:
+        await client.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_api_edit_min_balance_post_and_patch(warehouse_env):
+    db, fs, vs = warehouse_env
+    item_id = db.add_item(name="Кабель UTP", sku="UTP-5E", min_balance=0.0)
+    doc_id = db.add_document(filename="init.xlsx", file_type="excel")
+    db.add_transaction(item_id=item_id, document_id=doc_id, operation_type="income", quantity=50)
+
+    server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
+    client = TestClient(TestServer(server._app))
+    await client.start_server()
+
+    try:
+        # 1. Edit min_balance via POST /api/warehouse/items/{id}/edit
+        payload = {"field": "min_balance", "value": 20, "comment": "Встановлено мінімальний залишок"}
+        resp = await client.post(f"/api/warehouse/items/{item_id}/edit", json=payload)
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["success"] is True
+        assert data["item"]["min_balance"] == 20.0
+        assert "Змінено [Мінімальний залишок]: '0' → '20'" in data["source_row"]
+
+        # 2. Check items API returns min_balance
+        items_resp = await client.get("/api/warehouse/items")
+        items = await items_resp.json()
+        assert len(items) == 1
+        assert items[0]["min_balance"] == 20.0
+        assert items[0]["balance"] == 50.0
+
+        # 3. Edit min_balance via PATCH
+        patch_payload = {"field": "min_balance", "value": "35.5"}
+        resp_patch = await client.patch(f"/api/warehouse/items/{item_id}", json=patch_payload)
+        assert resp_patch.status == 200
+        data_patch = await resp_patch.json()
+        assert data_patch["success"] is True
+        assert data_patch["item"]["min_balance"] == 35.5
+    finally:
+        await client.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_api_edit_min_balance_invalid_number(warehouse_env):
+    db, fs, vs = warehouse_env
+    item_id = db.add_item(name="Тестовий товар")
+
+    server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
+    client = TestClient(TestServer(server._app))
+    await client.start_server()
+
+    try:
+        resp = await client.post(f"/api/warehouse/items/{item_id}/edit", json={"field": "min_balance", "value": "abc"})
+        assert resp.status == 400
+        data = await resp.json()
+        assert "error" in data
+    finally:
+        await client.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_api_min_balance_excel_export_and_import(warehouse_env, tmp_path):
+    import io
+    import openpyxl
+    from kolobot.excel_service import parse_excel
+
+    db, fs, vs = warehouse_env
+    doc_id = db.add_document(filename="init.xlsx", file_type="excel")
+    item1_id = db.add_item(name="Світильник 36W", sku="LIGHT-36", min_balance=15.0)
+    db.add_transaction(item_id=item1_id, document_id=doc_id, operation_type="income", quantity=10.0)
+
+    server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
+    client = TestClient(TestServer(server._app))
+    await client.start_server()
+
+    try:
+        # 1. Export Excel and check min_balance column
+        export_resp = await client.get("/api/warehouse/export")
+        assert export_resp.status == 200
+        excel_bytes = await export_resp.read()
+
+        wb = openpyxl.load_workbook(io.BytesIO(excel_bytes))
+        ws = wb.active
+        rows = list(ws.iter_rows(values_only=True))
+        assert len(rows) == 2
+        header = rows[0]
+        assert "Мін. залишок" in header
+        min_idx = header.index("Мін. залишок")
+        assert rows[1][min_idx] == 15.0
+
+        # 2. Test parse_excel with minimum balance header
+        test_file = tmp_path / "test_import.xlsx"
+        wb_new = openpyxl.Workbook()
+        ws_new = wb_new.active
+        ws_new.append(["Найменування", "Номенклатурний номер", "Прихід", "Мінімальний залишок"])
+        ws_new.append(["Автомат 16A", "AUTO-16", 20, 5])
+        wb_new.save(str(test_file))
+        wb_new.close()
+
+        doc_type, parsed_rows = parse_excel(str(test_file))
+        assert len(parsed_rows) == 1
+        assert parsed_rows[0]["name"] == "Автомат 16A"
+        assert parsed_rows[0]["min_balance"] == 5.0
+    finally:
+        await client.close()
+        db.close()
+
+
