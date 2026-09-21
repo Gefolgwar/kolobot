@@ -39,6 +39,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
         .badge-import { background: rgba(59,130,246,0.15); color: #60a5fa; }
         .badge-nakladna { background: rgba(16,185,129,0.15); color: #34d399; }
         .badge-vymoha { background: rgba(244,63,94,0.15); color: #fb7185; }
+        .badge-queued { background: rgba(245,158,11,0.15); color: #fbbf24; }
         .progress-bar { transition: width 0.3s ease; }
         .cursor-blink { animation: blink 1s step-end infinite; }
         @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
@@ -169,6 +170,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                             <th class="py-4 px-3">Файл</th>
                             <th class="py-4 px-3">Тип</th>
                             <th class="py-4 px-3">Тип документу</th>
+                            <th class="py-4 px-3">Статус</th>
                             <th class="py-4 px-3">Дата завантаження</th>
                             <th class="py-4 px-3">№ документа</th>
                             <th class="py-4 px-3">Позицій</th>
@@ -176,7 +178,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                         </tr>
                     </thead>
                     <tbody id="docs-tbody" class="divide-y divide-slate-800/60 text-sm">
-                        <tr><td colspan="9" class="py-12 text-center text-slate-500">
+                        <tr><td colspan="10" class="py-12 text-center text-slate-500">
                             <p>Документів немає.</p>
                         </td></tr>
                     </tbody>
@@ -926,6 +928,23 @@ function updateFilterCounts() {
 
 // ---- Documents ----
 
+const QUEUED_OCR_HINT = '⏳ Документ у черзі на розпізнавання. Текст з\'явиться після завершення обробки.';
+
+const DOC_STATUS_BADGES = {
+    queued: { label: '⏳ В черзі', cls: 'badge-queued' },
+    completed: { label: '✅ Готово', cls: 'badge-import' },
+    error: { label: '❌ Помилка', cls: 'badge-expense' },
+};
+
+function docStatusBadge(doc) {
+    const status = doc.status || 'completed';
+    const known = DOC_STATUS_BADGES[status];
+    if (known) {
+        return `<span class="px-2 py-0.5 rounded-full text-[11px] font-medium whitespace-nowrap ${known.cls}">${known.label}</span>`;
+    }
+    return `<span class="px-2 py-0.5 rounded-full text-[11px] font-medium whitespace-nowrap badge-import">${esc(status)}</span>`;
+}
+
 async function fetchDocs() {
     try {
         const res = await fetch('/api/warehouse/documents');
@@ -940,7 +959,7 @@ async function fetchDocs() {
 function renderDocs(docs) {
     const tbody = document.getElementById('docs-tbody');
     if (docs.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="9" class="py-12 text-center text-slate-500"><p>Документів немає.</p></td></tr>';
+        tbody.innerHTML = '<tr><td colspan="10" class="py-12 text-center text-slate-500"><p>Документів немає.</p></td></tr>';
         return;
     }
     let html = '';
@@ -981,6 +1000,7 @@ function renderDocs(docs) {
             <td class="py-4 px-3 font-medium text-slate-200">${esc(doc.filename)}</td>
             <td class="py-4 px-3"><span class="px-2 py-0.5 rounded-full text-[11px] font-medium badge-import">${typeLabel}</span></td>
             <td class="py-4 px-3">${docTypeBadge}</td>
+            <td class="py-4 px-3">${docStatusBadge(doc)}</td>
             <td class="py-4 px-3 text-slate-300">${date}</td>
             <td class="py-4 px-3 font-mono text-slate-300">${esc(doc.doc_number)}</td>
             <td class="py-4 px-3 text-blue-400 font-medium">${doc.transaction_count}</td>
@@ -991,7 +1011,7 @@ function renderDocs(docs) {
             </td>
         </tr>
         <tr id="doc-impact-row-${doc.id}" class="hidden">
-            <td colspan="9" class="p-0">
+            <td colspan="10" class="p-0">
                 <div class="expand-row px-8 py-4 border-t border-slate-800/40">
                     <div id="doc-impact-content-${doc.id}" class="text-xs text-slate-400">Завантаження...</div>
                 </div>
@@ -1060,7 +1080,7 @@ async function reloadDocImpact(docId) {
             // OCR Text Box
             h += '<div class="glass rounded-xl p-3 border border-slate-800 bg-slate-900/60">';
             h += '<div class="text-xs font-semibold text-slate-400 mb-1.5 flex items-center gap-1.5"><i class="fa-solid fa-align-left text-blue-400"></i><span>Розпізнаний OCR текст з файлу:</span></div>';
-            h += '<pre id="ocr-acc-text-' + docId + '" class="bg-slate-950/80 p-3 rounded-lg border border-slate-800/80 text-slate-300 font-mono text-[11px] whitespace-pre-wrap break-words leading-relaxed max-h-[160px] overflow-y-auto select-text">' + (rawText ? esc(rawText) : '<span class="text-slate-500 italic">(Розпізнаний текст відсутній)</span>') + '</pre>';
+            h += '<pre id="ocr-acc-text-' + docId + '" class="bg-slate-950/80 p-3 rounded-lg border border-slate-800/80 text-slate-300 font-mono text-[11px] whitespace-pre-wrap break-words leading-relaxed max-h-[160px] overflow-y-auto select-text">' + (rawText ? esc(rawText) : (data.status === 'queued' ? esc(QUEUED_OCR_HINT) : '<span class="text-slate-500 italic">(Розпізнаний текст відсутній)</span>')) + '</pre>';
             h += '</div>';
 
             // Items Impact Table
@@ -1326,7 +1346,7 @@ async function loadDocumentOcr(docId) {
         }
 
         currentOcrText = data.raw_text || '';
-        rawEl.textContent = currentOcrText || '(Розпізнаний текст відсутній)';
+        rawEl.textContent = currentOcrText || (data.status === 'queued' ? QUEUED_OCR_HINT : '(Розпізнаний текст відсутній)');
         numEl.textContent = data.doc_number || '—';
         dateEl.textContent = data.doc_date || '—';
 
@@ -2050,6 +2070,8 @@ class WebServer:
             "doc_date": doc.get("doc_date", ""),
             "raw_text": raw_text,
             "impact": impact,
+            "status": doc.get("status", "completed"),
+            "error_message": doc.get("error_message", ""),
         })
 
     async def _api_document_view(self, request: web.Request) -> web.Response:

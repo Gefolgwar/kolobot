@@ -1,6 +1,7 @@
 """Integration tests for Issue #5: Interactive Multi-Card Confirmation & Media Intake Update."""
 
 import asyncio
+import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
@@ -401,6 +402,113 @@ async def test_duplicate_check_and_dedup_force_and_open(tmp_path):
                     await dp.feed_update(bot, upd_open)
                     mock_send_file.assert_awaited_once()
                     cb_open.message.edit_reply_markup.assert_awaited_with(reply_markup=None)
+
+
+@pytest.mark.asyncio
+async def test_media_intake_saves_file_and_registers_queued_document(tmp_path):
+    """Issue #12: bytes are stored immediately and the document is registered as `queued`."""
+    with patch("kolobot.main.load_config") as mock_conf:
+        mock_conf.return_value = SimpleNamespace(
+            bot_token="12345:test_token",
+            gemini_keys_generate=["gen_key_1"],
+            gemini_keys_embed=["emb_key_1"],
+            rpm_limit=60,
+            rpd_limit=1000,
+            cooldown_sec=60,
+            downloads_path=str(tmp_path / "downloads"),
+            chroma_path=str(tmp_path / "chroma"),
+            warehouse_db_path=str(tmp_path / "warehouse.db"),
+            owner_user_id=100,
+            generate_model="gemini-2.5-flash",
+            embed_model="text-embedding-004",
+            rag_top_k=5,
+            rag_max_distance=1.0,
+            confirm_timeout_sec=600,
+            web_enabled=False,
+            web_host="0.0.0.0",
+            web_port=8080,
+        )
+
+        dp, bot, settings = build_app()
+        queue_service: DocumentQueueService = dp["queue_service"]
+        from kolobot.warehouse_db import WarehouseDB
+
+        msg = _make_photo_message(user_id=100, file_id="queued_photo")
+        upd = Update(update_id=1, message=msg)
+        upd._bot = bot
+
+        with patch.object(queue_service, "enqueue", new_callable=AsyncMock) as mock_enqueue:
+            await dp.feed_update(bot, upd)
+
+        enqueued = mock_enqueue.await_args.args[0]
+
+        # 1. Bot confirms the immediate local save with the queue position
+        answers = [c.args[0] for c in msg.answer.await_args_list if c.args]
+        queued_answers = [t for t in answers if t.startswith("📥 Збережено. В черзі (#")]
+        assert len(queued_answers) == 1, answers
+
+        # 2. The document is registered as `queued` with a saved file on disk
+        wdb = WarehouseDB(settings.warehouse_db_path)
+        wdb.init_db()
+        try:
+            docs = wdb.get_documents()
+            assert len(docs) == 1
+            assert docs[0]["status"] == "queued"
+            assert os.path.exists(docs[0]["file_path"])
+            with open(docs[0]["file_path"], "rb") as f:
+                assert f.read() == b"fake-image-bytes"
+        finally:
+            wdb.close()
+
+        # 3. The queue item carries the warehouse document id and the live status message
+        assert enqueued.wh_doc_id == docs[0]["id"]
+        assert enqueued.status_message_id is not None
+        assert queued_answers[0] == f"📥 Збережено. В черзі (#{docs[0]['id']})"
+
+
+@pytest.mark.asyncio
+async def test_media_intake_does_not_register_queued_document_for_duplicate(tmp_path):
+    """Issue #12: a skipped duplicate must not create a new queued document."""
+    with patch("kolobot.main.load_config") as mock_conf:
+        mock_conf.return_value = SimpleNamespace(
+            bot_token="12345:test_token",
+            gemini_keys_generate=["gen_key_1"],
+            gemini_keys_embed=["emb_key_1"],
+            rpm_limit=60,
+            rpd_limit=1000,
+            cooldown_sec=60,
+            downloads_path=str(tmp_path / "downloads"),
+            chroma_path=str(tmp_path / "chroma"),
+            warehouse_db_path=str(tmp_path / "warehouse.db"),
+            owner_user_id=100,
+            generate_model="gemini-2.5-flash",
+            embed_model="text-embedding-004",
+            rag_top_k=5,
+            rag_max_distance=1.0,
+            confirm_timeout_sec=600,
+            web_enabled=False,
+            web_host="0.0.0.0",
+            web_port=8080,
+        )
+
+        dp, bot, settings = build_app()
+        from kolobot.warehouse_db import WarehouseDB
+
+        with patch("kolobot.archive_service.ArchiveService.lookup_duplicate") as mock_lookup:
+            mock_lookup.return_value = {"id": "doc_existing_123", "metadata": {}}
+
+            msg = _make_photo_message(user_id=100, file_id="dup_photo")
+            upd = Update(update_id=1, message=msg)
+            upd._bot = bot
+
+            await dp.feed_update(bot, upd)
+
+        wdb = WarehouseDB(settings.warehouse_db_path)
+        wdb.init_db()
+        try:
+            assert wdb.get_documents() == []
+        finally:
+            wdb.close()
 
 
 @pytest.mark.asyncio

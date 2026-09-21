@@ -31,6 +31,7 @@ class QueueItem:
     source: str = "photo"
     file_name: Optional[str] = None
     ext: str = ".jpg"
+    wh_doc_id: Optional[int] = None
     item_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     created_at: float = field(default_factory=time.time)
 

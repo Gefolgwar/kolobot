@@ -61,9 +61,7 @@ def _make_album_message(group_id: str = "album-1"):
 
 @pytest.fixture
 def handler():
-    file_store = MagicMock()
-    file_store.save_tmp = MagicMock(return_value="/tmp/fake.jpg")
-    return MediaHandler(file_store=file_store, owner_user_id=100)
+    return MediaHandler(owner_user_id=100)
 
 
 @pytest.mark.asyncio

@@ -39,7 +39,9 @@ class WarehouseDB:
                 doc_number TEXT NOT NULL DEFAULT '',
                 doc_date TEXT NOT NULL DEFAULT '',
                 raw_text TEXT NOT NULL DEFAULT '',
-                doc_type TEXT NOT NULL DEFAULT ''
+                doc_type TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'completed',
+                error_message TEXT NOT NULL DEFAULT ''
             );
 
             CREATE TABLE IF NOT EXISTS warehouse_items (
@@ -76,6 +78,10 @@ class WarehouseDB:
         doc_cols = {row[1] for row in cursor.fetchall()}
         if "doc_type" not in doc_cols:
             self._conn.execute("ALTER TABLE documents ADD COLUMN doc_type TEXT NOT NULL DEFAULT ''")
+        if "status" not in doc_cols:
+            self._conn.execute("ALTER TABLE documents ADD COLUMN status TEXT NOT NULL DEFAULT 'completed'")
+        if "error_message" not in doc_cols:
+            self._conn.execute("ALTER TABLE documents ADD COLUMN error_message TEXT NOT NULL DEFAULT ''")
 
         cursor = self._conn.execute("PRAGMA table_info(warehouse_transactions)")
         tx_cols = {row[1] for row in cursor.fetchall()}
@@ -98,11 +104,12 @@ class WarehouseDB:
         doc_date: str = "",
         raw_text: str = "",
         doc_type: str = "",
+        status: str = "completed",
     ) -> int:
         cur = self._conn.execute(
-            "INSERT INTO documents (filename, file_type, file_path, uploaded_at, doc_number, doc_date, raw_text, doc_type) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (filename, file_type, file_path, time.time(), doc_number, doc_date, raw_text, doc_type),
+            "INSERT INTO documents (filename, file_type, file_path, uploaded_at, doc_number, doc_date, raw_text, doc_type, status) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (filename, file_type, file_path, time.time(), doc_number, doc_date, raw_text, doc_type, status),
         )
         self._conn.commit()
         return cur.lastrowid
@@ -392,6 +399,7 @@ class WarehouseDB:
             SELECT
                 d.id, d.filename, d.file_type, d.file_path, d.uploaded_at,
                 d.doc_number, d.doc_date, d.doc_type, d.raw_text,
+                d.status, d.error_message,
                 COUNT(wt.id) AS transaction_count
             FROM documents d
             LEFT JOIN warehouse_transactions wt ON d.id = wt.document_id
@@ -405,6 +413,26 @@ class WarehouseDB:
             "SELECT * FROM documents WHERE id = ?", (doc_id,)
         ).fetchone()
         return dict(row) if row else None
+
+    def update_document(self, doc_id: int, **kwargs: Any) -> bool:
+        allowed = {
+            "filename", "file_type", "file_path", "doc_number",
+            "doc_date", "raw_text", "doc_type", "status", "error_message",
+        }
+        updates = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
+        row = self._conn.execute(
+            "SELECT id FROM documents WHERE id = ?", (doc_id,)
+        ).fetchone()
+        if not row:
+            return False
+        if updates:
+            set_clause = ", ".join(f"{k} = ?" for k in updates)
+            values = list(updates.values()) + [doc_id]
+            self._conn.execute(
+                f"UPDATE documents SET {set_clause} WHERE id = ?", values
+            )
+            self._conn.commit()
+        return True
 
     def get_document_impact(self, doc_id: int) -> List[Dict[str, Any]]:
         rows = self._conn.execute("""

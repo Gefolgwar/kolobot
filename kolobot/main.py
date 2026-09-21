@@ -9,7 +9,7 @@ import os
 import re
 import sys
 import uuid
-from typing import Any
+from typing import Any, Optional
 
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
@@ -25,6 +25,7 @@ from kolobot.gemini_gateway import GeminiError, GeminiGateway
 from kolobot.handlers.commands import cmd_clear, cmd_status, router as commands_router
 from kolobot.handlers.list_delete import ListDeleteHandler
 from kolobot.handlers.media import MediaHandler, _ext_from_mime
+from kolobot.intake_service import DocumentIntakeService
 from kolobot.key_pool import KeyPool, PoolKind
 from kolobot.log_service import setup_logging_capture
 from kolobot.messages import ACCESS_DENIED_UK
@@ -268,6 +269,7 @@ def _save_to_warehouse(
     doc: Any,
     pending: dict,
     archive_doc_id: str,
+    existing_doc_id: Optional[int] = None,
 ) -> str:
     file_name = pending.get("file_name") or f"{archive_doc_id}{pending.get('ext', '.jpg')}"
     mime = pending.get("mime", "image/jpeg")
@@ -282,16 +284,32 @@ def _save_to_warehouse(
             pass
 
     doc_type_label, default_op = _detect_doc_type_and_op(doc)
+    file_type = "photo" if mime.startswith("image") else "pdf"
 
-    wh_doc_id = wdb.add_document(
-        filename=file_name,
-        file_type="photo" if mime.startswith("image") else "pdf",
-        file_path=file_path,
-        doc_number=getattr(doc, "doc_number", ""),
-        doc_date=getattr(doc, "doc_date", ""),
-        raw_text=raw_text,
-        doc_type=doc_type_label,
-    )
+    if existing_doc_id is not None:
+        wdb.update_document(
+            existing_doc_id,
+            filename=file_name,
+            file_type=file_type,
+            file_path=file_path,
+            doc_number=getattr(doc, "doc_number", ""),
+            doc_date=getattr(doc, "doc_date", ""),
+            raw_text=raw_text,
+            doc_type=doc_type_label,
+            status="completed",
+            error_message="",
+        )
+        wh_doc_id = existing_doc_id
+    else:
+        wh_doc_id = wdb.add_document(
+            filename=file_name,
+            file_type=file_type,
+            file_path=file_path,
+            doc_number=getattr(doc, "doc_number", ""),
+            doc_date=getattr(doc, "doc_date", ""),
+            raw_text=raw_text,
+            doc_type=doc_type_label,
+        )
 
     items_list = getattr(doc, "items", []) or []
     created = 0
@@ -468,9 +486,7 @@ def build_app():
         max_distance=settings.rag_max_distance,
     )
     doc_structurer = DocStructurer()
-    media_handler = MediaHandler(
-        file_store=file_store, owner_user_id=settings.owner_user_id
-    )
+    media_handler = MediaHandler(owner_user_id=settings.owner_user_id)
     list_delete = ListDeleteHandler(
         vector_store=vector_store,
         file_store=file_store,
@@ -513,6 +529,11 @@ def build_app():
         file_store=file_store,
         bot=bot,
         on_card_ready=_on_card_ready,
+    )
+
+    intake_service = DocumentIntakeService(
+        file_store=file_store,
+        warehouse_db=warehouse_db,
     )
 
     dedup_pending: dict[str, dict] = {}
@@ -577,7 +598,9 @@ def build_app():
         if pending_count > 0:
             await message.answer(f"ℹ️ Зверни увагу: у тебе є {pending_count} незбережених карток на підтвердження.")
 
-        status_msg = await message.answer("Розпізнаю…")
+        intake_result = await intake_service.accept(intake, message.bot)
+
+        status_msg = await message.answer(intake_result.message)
         status_id = getattr(status_msg, "message_id", None)
 
         item = QueueItem(
@@ -585,13 +608,14 @@ def build_app():
             file_unique_id=intake["file_unique_id"],
             mime=intake["mime"],
             file_size=intake["file_size"],
-            tmp_path=intake["tmp_path"],
+            tmp_path=intake_result.file_path,
             chat_id=message.chat.id,
             user_id=message.from_user.id if message.from_user else settings.owner_user_id,
             status_message_id=status_id,
             source=intake["source"],
             file_name=intake.get("file_name"),
             ext=intake.get("ext", ".jpg"),
+            wh_doc_id=intake_result.doc_id,
         )
         await queue_service.enqueue(item)
 
@@ -672,7 +696,8 @@ def build_app():
                     "mime": card.item.mime,
                 }
                 warehouse_msg = _save_to_warehouse(
-                    warehouse_db, file_store, doc, pending_dict, save_result.doc_id
+                    warehouse_db, file_store, doc, pending_dict, save_result.doc_id,
+                    existing_doc_id=card.item.wh_doc_id,
                 )
             except Exception as exc:
                 logger.warning("Warehouse save failed: %s", exc)
@@ -736,6 +761,12 @@ def build_app():
             except Exception as exc:
                 logger.warning("Failed to delete tmp file %s: %s", card.item.tmp_path, exc)
 
+        if card.item.wh_doc_id is not None:
+            try:
+                warehouse_db.delete_document(card.item.wh_doc_id)
+            except Exception as exc:
+                logger.warning("Failed to drop queued document %s: %s", card.item.wh_doc_id, exc)
+
         if callback.message:
             await callback.message.answer("Відхилено — тимчасовий файл видалено.")
         await callback.answer()
@@ -784,7 +815,9 @@ def build_app():
             if pending_count > 0:
                 await callback.message.answer(f"ℹ️ Зверни увагу: у тебе є {pending_count} незбережених карток на підтвердження.")
 
-            status_msg = await callback.message.answer("Розпізнаю…")
+            intake_result = await intake_service.accept(intake, callback.message.bot)
+
+            status_msg = await callback.message.answer(intake_result.message)
             status_id = getattr(status_msg, "message_id", None)
 
             item = QueueItem(
@@ -792,13 +825,14 @@ def build_app():
                 file_unique_id=intake["file_unique_id"],
                 mime=intake["mime"],
                 file_size=intake["file_size"],
-                tmp_path=intake["tmp_path"],
+                tmp_path=intake_result.file_path,
                 chat_id=callback.message.chat.id,
                 user_id=callback.from_user.id if callback.from_user else settings.owner_user_id,
                 status_message_id=status_id,
                 source=intake["source"],
                 file_name=intake.get("file_name"),
                 ext=intake.get("ext", ".jpg"),
+                wh_doc_id=intake_result.doc_id,
             )
             await queue_service.enqueue(item)
 

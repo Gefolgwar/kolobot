@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import datetime
+import sqlite3
+
 import pytest
 
 from kolobot.warehouse_db import WarehouseDB
@@ -319,6 +321,91 @@ def test_add_item_with_min_balance(warehouse_db):
 
     items = warehouse_db.get_items_with_balance()
     assert items[0]["min_balance"] == 100.0
+
+
+def test_init_db_migrates_legacy_documents_to_completed_status(tmp_path):
+    """Existing DBs without status columns: old rows must become 'completed'."""
+    db_path = str(tmp_path / "legacy.db")
+    conn = sqlite3.connect(db_path)
+    conn.executescript("""
+        CREATE TABLE documents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            filename TEXT NOT NULL,
+            file_type TEXT NOT NULL,
+            file_path TEXT NOT NULL DEFAULT '',
+            uploaded_at REAL NOT NULL,
+            doc_number TEXT NOT NULL DEFAULT '',
+            doc_date TEXT NOT NULL DEFAULT '',
+            raw_text TEXT NOT NULL DEFAULT '',
+            doc_type TEXT NOT NULL DEFAULT ''
+        );
+    """)
+    conn.execute(
+        "INSERT INTO documents (filename, file_type, uploaded_at) VALUES (?, ?, ?)",
+        ("legacy.jpg", "photo", 1.0),
+    )
+    conn.commit()
+    conn.close()
+
+    db = WarehouseDB(db_path=db_path)
+    db.init_db()
+    try:
+        doc = db.get_document(1)
+        assert doc["status"] == "completed"
+        assert doc["error_message"] == ""
+    finally:
+        db.close()
+
+
+def test_add_document_registers_queued_status_with_saved_file_path(warehouse_db):
+    doc_id = warehouse_db.add_document(
+        filename="nakladna_1.jpg",
+        file_type="photo",
+        file_path="/downloads/tmp/a1b2c3.jpg",
+        status="queued",
+    )
+
+    doc = warehouse_db.get_document(doc_id)
+    assert doc["status"] == "queued"
+    assert doc["error_message"] == ""
+    assert doc["file_path"] == "/downloads/tmp/a1b2c3.jpg"
+
+    docs = warehouse_db.get_documents()
+    assert len(docs) == 1
+    assert docs[0]["status"] == "queued"
+
+
+def test_update_document_completes_queued_record_in_place(warehouse_db):
+    doc_id = warehouse_db.add_document(
+        filename="photo.jpg",
+        file_type="photo",
+        file_path="/downloads/tmp/a1b2c3.jpg",
+        status="queued",
+    )
+
+    updated = warehouse_db.update_document(
+        doc_id,
+        file_path="/downloads/abcdef1234.jpg",
+        doc_number="101",
+        doc_date="01.08.2026",
+        doc_type="НАКЛАДНА",
+        raw_text="НАКЛАДНА № 101",
+        status="completed",
+    )
+
+    assert updated is True
+    assert len(warehouse_db.get_documents()) == 1
+
+    doc = warehouse_db.get_document(doc_id)
+    assert doc["status"] == "completed"
+    assert doc["file_path"] == "/downloads/abcdef1234.jpg"
+    assert doc["doc_number"] == "101"
+    assert doc["doc_type"] == "НАКЛАДНА"
+    assert doc["raw_text"] == "НАКЛАДНА № 101"
+
+
+def test_update_document_unknown_id_returns_false(warehouse_db):
+    assert warehouse_db.update_document(9999, status="completed") is False
 
 
 

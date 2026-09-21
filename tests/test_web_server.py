@@ -145,6 +145,78 @@ async def test_api_delete_document(warehouse_env):
 
 
 @pytest.mark.asyncio
+async def test_documents_panel_renders_queued_status_column(warehouse_env):
+    db, fs, vs = warehouse_env
+    server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
+    client = TestClient(TestServer(server._app))
+    await client.start_server()
+
+    try:
+        resp = await client.get("/")
+        html = await resp.text()
+        assert ">Статус<" in html
+        assert "⏳ В черзі" in html
+        assert "Документ у черзі на розпізнавання" in html
+    finally:
+        await client.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_api_queued_document_exposes_status_and_preview(warehouse_env, tmp_path):
+    db, fs, vs = warehouse_env
+    image_path = tmp_path / "queued.jpg"
+    image_path.write_bytes(b"\xff\xd8queued-image")
+    doc_id = db.add_document(
+        filename="queued.jpg",
+        file_type="photo",
+        file_path=str(image_path),
+        status="queued",
+    )
+
+    server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
+    client = TestClient(TestServer(server._app))
+    await client.start_server()
+
+    try:
+        resp = await client.get("/api/warehouse/documents")
+        data = await resp.json()
+        assert len(data) == 1
+        assert data[0]["status"] == "queued"
+        assert data[0]["file_path"] == str(image_path)
+
+        view = await client.get(f"/api/warehouse/documents/{doc_id}/view")
+        assert view.status == 200
+        assert await view.read() == b"\xff\xd8queued-image"
+
+        ocr = await client.get(f"/api/warehouse/documents/{doc_id}/ocr")
+        ocr_data = await ocr.json()
+        assert ocr_data["status"] == "queued"
+    finally:
+        await client.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_api_completed_document_reports_completed_status(warehouse_env):
+    db, fs, vs = warehouse_env
+    doc_id = db.add_document(filename="done.jpg", file_type="photo", raw_text="текст")
+
+    server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
+    client = TestClient(TestServer(server._app))
+    await client.start_server()
+
+    try:
+        ocr = await client.get(f"/api/warehouse/documents/{doc_id}/ocr")
+        data = await ocr.json()
+        assert data["status"] == "completed"
+        assert data["raw_text"] == "текст"
+    finally:
+        await client.close()
+        db.close()
+
+
+@pytest.mark.asyncio
 async def test_api_document_ocr(warehouse_env):
     db, fs, vs = warehouse_env
     doc_id = db.add_document(

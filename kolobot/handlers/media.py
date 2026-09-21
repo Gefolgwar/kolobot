@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-from kolobot.file_store import FileStore
-
 ALLOWED_MIMES = {"image/jpeg", "image/png", "image/webp", "application/pdf"}
 MAX_FILE_SIZE = 20_000_000
 
@@ -13,11 +11,10 @@ MAX_FILE_SIZE = 20_000_000
 class MediaHandler:
     """
     Accept owner photos, image documents, PDFs, and media albums.
-    Validates MIME type and file size (<20MB), allocating a temporary file slot.
+    Validates MIME type and file size (<20MB) and normalizes file metadata.
     """
 
-    def __init__(self, file_store: FileStore, owner_user_id: int) -> None:
-        self._file_store = file_store
+    def __init__(self, owner_user_id: int) -> None:
         self._owner = owner_user_id
 
     async def handle_media(self, message: Any) -> Optional[Dict[str, Any]]:
@@ -53,8 +50,6 @@ class MediaHandler:
             )
             return None
 
-        tmp_path = self._file_store.save_tmp(b"", ext=ext)
-
         return {
             "file_id": file_id,
             "file_unique_id": file_unique_id,
@@ -62,7 +57,6 @@ class MediaHandler:
             "mime": mime,
             "file_name": file_name,
             "ext": ext,
-            "tmp_path": tmp_path,
             "source": "photo" if photo else "document",
         }
 
