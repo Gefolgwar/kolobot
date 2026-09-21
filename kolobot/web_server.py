@@ -950,10 +950,69 @@ const DOC_STATUS_BADGES = {
 function docStatusBadge(doc) {
     const status = doc.status || 'completed';
     const known = DOC_STATUS_BADGES[status];
+    const errMsg = doc.error_message ? ` title="${esc(doc.error_message)}"` : '';
     if (known) {
-        return `<span class="px-2 py-0.5 rounded-full text-[11px] font-medium whitespace-nowrap ${known.cls}">${known.label}</span>`;
+        return `<span class="px-2 py-0.5 rounded-full text-[11px] font-medium whitespace-nowrap ${known.cls}"${errMsg}>${known.label}</span>`;
     }
-    return `<span class="px-2 py-0.5 rounded-full text-[11px] font-medium whitespace-nowrap badge-import">${esc(status)}</span>`;
+    return `<span class="px-2 py-0.5 rounded-full text-[11px] font-medium whitespace-nowrap badge-import"${errMsg}>${esc(status)}</span>`;
+}
+
+let smartPollingTimer = null;
+let hadActiveDocs = false;
+
+function checkSmartPolling() {
+    const hasActive = allDocs.some(d => d.status === 'queued' || (d.status && d.status.startsWith('processing_')));
+    if (hasActive) {
+        hadActiveDocs = true;
+        if (!smartPollingTimer) {
+            smartPollingTimer = setTimeout(smartPollTick, 3000);
+        }
+    } else {
+        if (smartPollingTimer) {
+            clearTimeout(smartPollingTimer);
+            smartPollingTimer = null;
+        }
+        if (hadActiveDocs) {
+            hadActiveDocs = false;
+            fetchItems();
+        }
+    }
+}
+
+async function smartPollTick() {
+    smartPollingTimer = null;
+    await fetchDocs();
+    if (currentViewingDocId) {
+        const curDoc = allDocs.find(d => d.id === currentViewingDocId);
+        if (curDoc && (curDoc.status === 'queued' || (curDoc.status && curDoc.status.startsWith('processing_')))) {
+            loadDocumentOcr(currentViewingDocId);
+        }
+    }
+    const openImpactRows = document.querySelectorAll('[id^="doc-impact-row-"]:not(.hidden)');
+    for (const row of openImpactRows) {
+        const docId = parseInt(row.id.replace('doc-impact-row-', ''));
+        if (docId) {
+            const d = allDocs.find(x => x.id === docId);
+            if (d && (d.status === 'queued' || (d.status && d.status.startsWith('processing_')))) {
+                reloadDocImpact(docId);
+            }
+        }
+    }
+    checkSmartPolling();
+}
+
+async function retryDocument(docId) {
+    try {
+        const res = await fetch('/api/warehouse/documents/' + docId + '/retry', { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok || data.error) {
+            alert(data.error || 'Помилка повтору');
+            return;
+        }
+        await fetchDocs();
+    } catch(e) {
+        alert('Помилка: ' + e.message);
+    }
 }
 
 async function fetchDocs() {
@@ -962,6 +1021,7 @@ async function fetchDocs() {
         allDocs = await res.json();
         document.getElementById('docs-count').innerText = allDocs.length;
         renderDocs(allDocs);
+        checkSmartPolling();
     } catch(e) {
         console.error(e);
     }
@@ -1004,6 +1064,13 @@ function renderDocs(docs) {
             </button>`;
         }
 
+        let retryBtn = '';
+        if (doc.status === 'error') {
+            retryBtn = `<button onclick="event.stopPropagation(); retryDocument(${doc.id})" class="p-2 text-amber-400 hover:text-amber-300 hover:bg-amber-500/10 rounded-lg transition mr-1" title="Повторити">
+                <i class="fa-solid fa-rotate-right"></i>
+            </button>`;
+        }
+
         html += `
         <tr class="hover:bg-slate-800/40 transition cursor-pointer" onclick="toggleDocImpact(${doc.id})">
             <td class="py-4 px-3"><i id="doc-chevron-${doc.id}" class="fa-solid fa-chevron-right text-[10px] text-slate-500 transition-transform"></i></td>
@@ -1016,7 +1083,7 @@ function renderDocs(docs) {
             <td class="py-4 px-3 font-mono text-slate-300">${esc(doc.doc_number)}</td>
             <td class="py-4 px-3 text-blue-400 font-medium">${doc.transaction_count}</td>
             <td class="py-4 px-3 text-right">
-                <button onclick="event.stopPropagation(); openDeleteModal(${doc.id}, '${esc(doc.filename)}')" class="p-2 text-slate-400 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition" title="Видалити">
+                ${retryBtn}<button onclick="event.stopPropagation(); openDeleteModal(${doc.id}, '${esc(doc.filename)}')" class="p-2 text-slate-400 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition" title="Видалити">
                     <i class="fa-solid fa-trash"></i>
                 </button>
             </td>
@@ -1870,6 +1937,7 @@ class WebServer:
         host: str = "127.0.0.1",
         port: int = 8000,
         log_buffer: Optional[LogBuffer] = None,
+        queue_service: Optional[Any] = None,
     ) -> None:
         self._db = warehouse_db
         self._fs = file_store
@@ -1878,6 +1946,7 @@ class WebServer:
         self._host = host
         self._port = port
         self._log_buffer = log_buffer or get_global_log_buffer()
+        self._queue_service = queue_service
         setup_logging_capture(buffer=self._log_buffer)
 
         self._app = web.Application(client_max_size=50 * 1024 * 1024)
@@ -1893,6 +1962,7 @@ class WebServer:
         self._app.router.add_patch("/api/warehouse/items/{item_id}", self._api_edit_item)
         self._app.router.add_post("/api/warehouse/items/{item_id}", self._api_edit_item)
         self._app.router.add_get("/api/warehouse/documents", self._api_documents)
+        self._app.router.add_post("/api/warehouse/documents/{doc_id}/retry", self._api_retry_document)
         self._app.router.add_get("/api/warehouse/documents/{doc_id}/impact", self._api_document_impact)
         self._app.router.add_get("/api/warehouse/documents/{doc_id}/ocr", self._api_document_ocr)
         self._app.router.add_get("/api/warehouse/documents/{doc_id}/view", self._api_document_view)
@@ -2027,6 +2097,32 @@ class WebServer:
     async def _api_documents(self, request: web.Request) -> web.Response:
         docs = self._db.get_documents()
         return web.json_response(docs)
+
+    async def _api_retry_document(self, request: web.Request) -> web.Response:
+        try:
+            doc_id = int(request.match_info["doc_id"])
+        except (KeyError, ValueError):
+            return web.json_response({"error": "Некоректний ID документа"}, status=400)
+
+        doc = self._db.get_document(doc_id)
+        if not doc:
+            return web.json_response({"error": "Документ не знайдено"}, status=404)
+
+        # Reset status to queued in DB
+        self._db.update_document(doc_id, status="queued", error_message="")
+
+        if self._queue_service:
+            try:
+                await self._queue_service.retry_document(doc_id)
+            except Exception as exc:
+                logger.error("Error re-enqueuing document %d: %s", doc_id, exc)
+
+        updated_doc = self._db.get_document(doc_id)
+        return web.json_response({
+            "success": True,
+            "status": "queued",
+            "document": updated_doc,
+        })
 
     async def _api_document_impact(self, request: web.Request) -> web.Response:
         doc_id = int(request.match_info["doc_id"])

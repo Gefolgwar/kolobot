@@ -637,19 +637,33 @@ def build_app():
         if intake is None:
             return
 
-        # Dedup check
+        is_batch = bool(getattr(message, "media_group_id", None))
+        unique_id = intake["file_unique_id"]
+
+        # Dedup check in archive and active/queued queue
         existing = archive_svc.lookup_duplicate(
             user_id=settings.owner_user_id,
-            file_unique_id=intake["file_unique_id"],
+            file_unique_id=unique_id,
         )
-        if existing is not None:
+        is_dup = (existing is not None) or queue_service.has_file_unique_id(unique_id)
+
+        if is_dup:
+            if is_batch:
+                name_str = f" «{intake['file_name']}»" if intake.get("file_name") else ""
+                await message.answer(f"⚠️ Файл{name_str} вже є в системі — дублікат пропущено.")
+                return
+
             dedup_id = uuid.uuid4().hex[:8]
             dedup_pending[dedup_id] = intake
-            kb = InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="Відкрити старий", callback_data=f"dedup_open:{existing['id']}"),
-                InlineKeyboardButton(text="Все одно зберегти", callback_data=f"dedup_force:{dedup_id}"),
-            ]])
-            await message.answer("Цей файл вже є в архіві.", reply_markup=kb)
+            existing_id = existing["id"] if existing else ""
+            if existing_id:
+                kb = InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text="Відкрити старий", callback_data=f"dedup_open:{existing_id}"),
+                    InlineKeyboardButton(text="Все одно зберегти", callback_data=f"dedup_force:{dedup_id}"),
+                ]])
+                await message.answer("Цей файл вже є в архіві.", reply_markup=kb)
+            else:
+                await message.answer("Цей файл вже знаходиться в черзі на обробку.")
             return
 
         # Unsaved cards reminder
@@ -1031,6 +1045,7 @@ def build_app():
             owner_user_id=settings.owner_user_id,
             host=settings.web_host,
             port=settings.web_port,
+            queue_service=queue_service,
         )
 
     return dp, bot, settings

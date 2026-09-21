@@ -358,6 +358,69 @@ class DocumentQueueService:
     def get_pending_card_count(self, user_id: Optional[int] = None) -> int:
         return len(self.list_pending_cards(user_id))
 
+    def has_file_unique_id(self, file_unique_id: str) -> bool:
+        """Check if an item with the given file_unique_id is currently processing or queued."""
+        if not file_unique_id:
+            return False
+        if self._current_item and self._current_item.file_unique_id == file_unique_id:
+            return True
+        for item in list(self._queue._queue):
+            if item.file_unique_id == file_unique_id:
+                return True
+        return False
+
+    async def retry_document(self, doc_id: int) -> Optional[QueueItem]:
+        """Reset document status to queued in DB, clear error_message, and re-enqueue for processing."""
+        if not self._warehouse_db:
+            return None
+
+        doc = self._warehouse_db.get_document(doc_id)
+        if not doc:
+            return None
+
+        file_path = doc.get("file_path", "")
+        filename = doc.get("filename", f"document_{doc_id}.jpg")
+        file_type = doc.get("file_type", "photo")
+        ext = os.path.splitext(file_path)[1] or os.path.splitext(filename)[1] or ".jpg"
+        mime = "application/pdf" if ext.lower() == ".pdf" else "image/jpeg"
+
+        if not file_path or not os.path.exists(file_path):
+            file_path = self._file_store.get_tmp_path(ext=ext)
+            self._warehouse_db.update_document(doc_id, file_path=file_path)
+
+        size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
+        chat_id = doc.get("chat_id") or self._default_chat_id or 0
+        user_id = doc.get("user_id") or self._default_user_id or 0
+        file_id = doc.get("file_id") or f"doc_{doc_id}"
+
+        # Reset document in warehouse DB
+        self._warehouse_db.update_document(doc_id, status="queued", error_message="")
+
+        item = QueueItem(
+            file_id=file_id,
+            file_unique_id=f"retry_{doc_id}_{int(time.time())}",
+            mime=mime,
+            file_size=size,
+            tmp_path=file_path,
+            chat_id=chat_id,
+            user_id=user_id,
+            status_message_id=None,
+            source=file_type,
+            file_name=filename,
+            ext=ext,
+            wh_doc_id=doc_id,
+        )
+
+        await self._queue.put(item)
+        await self.start()
+
+        msg = f"Document #{doc_id} re-enqueued for retry (file_name={filename})"
+        logger.info(msg)
+        if self._log_buffer:
+            self._log_buffer.add_entry(level="INFO", logger_name="kolobot.queue_service", message=msg)
+
+        return item
+
     async def _worker_loop(self) -> None:
         """Continuously process queued items in strict FIFO order."""
         while self._running:
@@ -550,11 +613,12 @@ class DocumentQueueService:
                         )
                     error_text = f"❌ Не вдалося розпізнати документ після {max_retries} повторних спроб."
                     await self._update_status(item, error_text)
-                    try:
-                        if os.path.exists(item.tmp_path):
-                            self._file_store.delete_tmp(item.tmp_path)
-                    except Exception as cleanup_err:
-                        logger.warning("Failed to delete tmp file %s: %s", item.tmp_path, cleanup_err)
+                    if item.wh_doc_id is None:
+                        try:
+                            if os.path.exists(item.tmp_path):
+                                self._file_store.delete_tmp(item.tmp_path)
+                        except Exception as cleanup_err:
+                            logger.warning("Failed to delete tmp file %s: %s", item.tmp_path, cleanup_err)
                     raise
 
     def _generate_card_id(self) -> str:
