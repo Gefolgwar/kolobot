@@ -41,7 +41,10 @@ class WarehouseDB:
                 raw_text TEXT NOT NULL DEFAULT '',
                 doc_type TEXT NOT NULL DEFAULT '',
                 status TEXT NOT NULL DEFAULT 'completed',
-                error_message TEXT NOT NULL DEFAULT ''
+                error_message TEXT NOT NULL DEFAULT '',
+                file_id TEXT NOT NULL DEFAULT '',
+                chat_id INTEGER NOT NULL DEFAULT 0,
+                user_id INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS warehouse_items (
@@ -82,6 +85,12 @@ class WarehouseDB:
             self._conn.execute("ALTER TABLE documents ADD COLUMN status TEXT NOT NULL DEFAULT 'completed'")
         if "error_message" not in doc_cols:
             self._conn.execute("ALTER TABLE documents ADD COLUMN error_message TEXT NOT NULL DEFAULT ''")
+        if "file_id" not in doc_cols:
+            self._conn.execute("ALTER TABLE documents ADD COLUMN file_id TEXT NOT NULL DEFAULT ''")
+        if "chat_id" not in doc_cols:
+            self._conn.execute("ALTER TABLE documents ADD COLUMN chat_id INTEGER NOT NULL DEFAULT 0")
+        if "user_id" not in doc_cols:
+            self._conn.execute("ALTER TABLE documents ADD COLUMN user_id INTEGER NOT NULL DEFAULT 0")
 
         cursor = self._conn.execute("PRAGMA table_info(warehouse_transactions)")
         tx_cols = {row[1] for row in cursor.fetchall()}
@@ -105,11 +114,14 @@ class WarehouseDB:
         raw_text: str = "",
         doc_type: str = "",
         status: str = "completed",
+        file_id: str = "",
+        chat_id: int = 0,
+        user_id: int = 0,
     ) -> int:
         cur = self._conn.execute(
-            "INSERT INTO documents (filename, file_type, file_path, uploaded_at, doc_number, doc_date, raw_text, doc_type, status) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (filename, file_type, file_path, time.time(), doc_number, doc_date, raw_text, doc_type, status),
+            "INSERT INTO documents (filename, file_type, file_path, uploaded_at, doc_number, doc_date, raw_text, doc_type, status, file_id, chat_id, user_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (filename, file_type, file_path, time.time(), doc_number, doc_date, raw_text, doc_type, status, file_id, chat_id, user_id),
         )
         self._conn.commit()
         return cur.lastrowid
@@ -414,10 +426,19 @@ class WarehouseDB:
         ).fetchone()
         return dict(row) if row else None
 
+    def get_unprocessed_documents(self) -> List[Dict[str, Any]]:
+        rows = self._conn.execute("""
+            SELECT * FROM documents
+            WHERE status IN ('queued', 'processing_ocr', 'processing_emb')
+            ORDER BY id ASC
+        """).fetchall()
+        return [dict(r) for r in rows]
+
     def update_document(self, doc_id: int, **kwargs: Any) -> bool:
         allowed = {
             "filename", "file_type", "file_path", "doc_number",
             "doc_date", "raw_text", "doc_type", "status", "error_message",
+            "file_id", "chat_id", "user_id",
         }
         updates = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
         row = self._conn.execute(

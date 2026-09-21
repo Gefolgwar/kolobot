@@ -56,6 +56,9 @@ class DocumentIntakeService:
             file_type=file_type,
             file_path=file_path,
             status="queued",
+            file_id=intake.get("file_id", ""),
+            chat_id=intake.get("chat_id", 0),
+            user_id=intake.get("user_id", 0),
         )
         logger.info("Intake accepted file_id=%s as queued document #%d", intake["file_id"], doc_id)
 

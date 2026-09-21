@@ -586,6 +586,8 @@ def build_app():
         on_card_ready=_on_card_ready,
         item_delay_sec=getattr(settings, "queue_item_delay_sec", 3.0),
         warehouse_db=warehouse_db,
+        default_chat_id=settings.owner_user_id,
+        default_user_id=settings.owner_user_id,
     )
 
     intake_service = DocumentIntakeService(

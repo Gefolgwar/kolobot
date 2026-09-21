@@ -14,6 +14,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 from kolobot.doc_structurer import CardViewModel, DocStructurer, Document, ParseStatus
 from kolobot.file_store import FileStore
 from kolobot.gemini_gateway import GeminiGateway
+from kolobot.log_service import get_global_log_buffer
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +66,7 @@ def _supports_status_update(fn: Any) -> bool:
         return False
 
 
-DEFAULT_RETRY_DELAYS = (10.0, 30.0, 60.0)
+DEFAULT_RETRY_DELAYS = (5.0, 15.0, 30.0)
 
 
 class DocumentQueueService:
@@ -87,6 +88,10 @@ class DocumentQueueService:
         retry_delays: tuple[float, ...] = DEFAULT_RETRY_DELAYS,
         item_delay_sec: float = 0.0,
         warehouse_db: Optional[Any] = None,
+        log_buffer: Optional[Any] = None,
+        auto_recover: bool = True,
+        default_chat_id: int = 0,
+        default_user_id: int = 0,
     ) -> None:
         self._gateway = gateway
         self._doc_structurer = doc_structurer
@@ -99,21 +104,104 @@ class DocumentQueueService:
         self._retry_delays = tuple(float(d) for d in retry_delays)
         self._item_delay_sec = float(item_delay_sec)
         self._warehouse_db = warehouse_db
+        self._log_buffer = log_buffer if log_buffer is not None else get_global_log_buffer()
+        self._auto_recover = auto_recover
+        self._default_chat_id = int(default_chat_id)
+        self._default_user_id = int(default_user_id)
 
         self._queue: asyncio.Queue[QueueItem] = asyncio.Queue()
         self._pending_cards: Dict[str, PendingCard] = {}
         self._worker_task: Optional[asyncio.Task] = None
         self._running: bool = False
         self._current_item: Optional[QueueItem] = None
+        self._recovering: bool = False
+        self._recovered: bool = False
 
     async def start(self) -> None:
-        """Start background worker task if not already running."""
+        """Start background worker task if not already running, running crash recovery if enabled."""
         if self._worker_task is None or self._worker_task.done():
             self._running = True
             self._worker_task = asyncio.create_task(
                 self._worker_loop(), name="document_queue_worker"
             )
             logger.info("DocumentQueueService background worker started.")
+            if self._auto_recover and not self._recovered and self._warehouse_db:
+                self._recovered = True
+                try:
+                    await self.recover_pending(
+                        default_chat_id=self._default_chat_id,
+                        default_user_id=self._default_user_id,
+                    )
+                except Exception as exc:
+                    logger.error("Error during crash recovery on start: %s", exc)
+
+    async def recover_pending(
+        self,
+        default_chat_id: Optional[int] = None,
+        default_user_id: Optional[int] = None,
+    ) -> int:
+        """Recover unprocessed documents (queued, processing_ocr, processing_emb) from warehouse DB."""
+        if not self._warehouse_db or self._recovering:
+            return 0
+        self._recovering = True
+        try:
+            unprocessed = self._warehouse_db.get_unprocessed_documents()
+            if not unprocessed:
+                return 0
+
+            target_chat_id = self._default_chat_id if default_chat_id is None else default_chat_id
+            target_user_id = self._default_user_id if default_user_id is None else default_user_id
+
+            existing_doc_ids = set()
+            if self._current_item and self._current_item.wh_doc_id is not None:
+                existing_doc_ids.add(self._current_item.wh_doc_id)
+            for q_item in list(self._queue._queue):
+                if q_item.wh_doc_id is not None:
+                    existing_doc_ids.add(q_item.wh_doc_id)
+
+            count = 0
+            for doc in unprocessed:
+                doc_id = doc["id"]
+                if doc_id in existing_doc_ids:
+                    continue
+                file_path = doc.get("file_path", "")
+                filename = doc.get("filename", "recovered.jpg")
+                file_type = doc.get("file_type", "photo")
+                ext = os.path.splitext(file_path)[1] or os.path.splitext(filename)[1] or ".jpg"
+                mime = "application/pdf" if ext.lower() == ".pdf" else "image/jpeg"
+                size = os.path.getsize(file_path) if (file_path and os.path.exists(file_path)) else 0
+
+                # Reset status in DB to queued
+                self._warehouse_db.update_document(doc_id, status="queued")
+
+                chat_id = doc.get("chat_id") or target_chat_id or 0
+                user_id = doc.get("user_id") or target_user_id or 0
+                file_id = doc.get("file_id") or f"recovered_{doc_id}"
+
+                item = QueueItem(
+                    file_id=file_id,
+                    file_unique_id=f"recovered_uniq_{doc_id}",
+                    mime=mime,
+                    file_size=size,
+                    tmp_path=file_path,
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    status_message_id=None,
+                    source=file_type,
+                    file_name=filename,
+                    ext=ext,
+                    wh_doc_id=doc_id,
+                )
+                await self._queue.put(item)
+                count += 1
+
+            msg = f"Crash recovery: restored and enqueued {count} unprocessed document(s)"
+            logger.info(msg)
+            if self._log_buffer:
+                self._log_buffer.add_entry(level="INFO", logger_name="kolobot.queue_service", message=msg)
+            return count
+        finally:
+            self._recovering = False
 
     async def stop(self) -> None:
         """Cancel and stop the background worker task."""
@@ -224,8 +312,8 @@ class DocumentQueueService:
         else:
             queue_item = item
 
-        await self.start()
         await self._queue.put(queue_item)
+        await self.start()
         logger.info(
             "Enqueued item %s (file_id=%s, queue_size=%d)",
             queue_item.item_id,
@@ -240,6 +328,12 @@ class DocumentQueueService:
 
     @property
     def queue_size(self) -> int:
+        return self._queue.qsize()
+
+    def get_queue_length(self) -> int:
+        return self._queue.qsize()
+
+    def get_queue_size(self) -> int:
         return self._queue.qsize()
 
     @property
@@ -298,15 +392,26 @@ class DocumentQueueService:
             except Exception as exc:
                 logger.error("Error in on_status_update callback: %s", exc)
 
-        if self._bot and item.status_message_id is not None:
-            try:
-                await self._bot.edit_message_text(
-                    chat_id=item.chat_id,
-                    message_id=item.status_message_id,
-                    text=text,
-                )
-            except Exception as exc:
-                logger.debug("Failed to edit Telegram status message %s: %s", item.status_message_id, exc)
+        if self._bot:
+            edited = False
+            if item.status_message_id is not None:
+                try:
+                    await self._bot.edit_message_text(
+                        chat_id=item.chat_id,
+                        message_id=item.status_message_id,
+                        text=text,
+                    )
+                    edited = True
+                except Exception as exc:
+                    logger.debug("Failed to edit Telegram status message %s: %s", item.status_message_id, exc)
+            if not edited and item.status_message_id is None and ("❌" in text or "Помилка" in text):
+                try:
+                    await self._bot.send_message(
+                        chat_id=item.chat_id,
+                        text=text,
+                    )
+                except Exception as exc:
+                    logger.debug("Failed to send error message to Telegram chat %s: %s", item.chat_id, exc)
 
     async def _process_item(self, item: QueueItem) -> None:
         """Download file, call Gemini OCR extraction with exponential retry logic, parse with DocStructurer, register PendingCard."""
@@ -320,12 +425,23 @@ class DocumentQueueService:
         for attempt in range(total_attempts):
             if attempt > 0:
                 delay = self._retry_delays[attempt - 1]
-                status_text = (
-                    f"🔄 Помилка розпізнавання. Спроба {attempt}/{max_retries}. "
-                    f"Повтор через {int(delay)}с..."
-                )
-                await self._update_status(item, status_text)
-                await asyncio.sleep(delay)
+                if delay < 1.0:
+                    status_text = (
+                        f"🔄 Помилка розпізнавання. Спроба {attempt}/{max_retries}. "
+                        f"Повтор через {int(delay)}с..."
+                    )
+                    await self._update_status(item, status_text)
+                    await asyncio.sleep(delay)
+                else:
+                    rem = int(delay)
+                    while rem > 0 and self._running:
+                        status_text = (
+                            f"🔄 Помилка розпізнавання. Спроба {attempt}/{max_retries}. "
+                            f"Повтор через {rem}с..."
+                        )
+                        await self._update_status(item, status_text)
+                        await asyncio.sleep(1.0)
+                        rem -= 1
 
             try:
                 # 1. Obtain image/document bytes
@@ -403,20 +519,35 @@ class DocumentQueueService:
 
             except Exception as exc:
                 if attempt < max_retries:
-                    logger.warning(
-                        "Attempt %d/%d failed for item %s: %s. Retrying...",
-                        attempt + 1,
-                        total_attempts,
-                        item.item_id,
-                        exc,
+                    warn_msg = (
+                        f"Attempt {attempt + 1}/{total_attempts} failed for item {item.item_id} "
+                        f"(doc #{item.wh_doc_id}): {exc}. Retrying..."
                     )
+                    logger.warning(warn_msg)
+                    if self._log_buffer:
+                        self._log_buffer.add_entry(
+                            level="WARN",
+                            logger_name="kolobot.queue_service",
+                            message=warn_msg,
+                        )
                 else:
-                    logger.error(
-                        "All %d attempts exhausted for item %s: %s",
-                        total_attempts,
-                        item.item_id,
-                        exc,
+                    err_msg = (
+                        f"All {total_attempts} attempts exhausted for item {item.item_id} "
+                        f"(doc #{item.wh_doc_id}): {exc}"
                     )
+                    logger.error(err_msg)
+                    if self._log_buffer:
+                        self._log_buffer.add_entry(
+                            level="ERR",
+                            logger_name="kolobot.queue_service",
+                            message=err_msg,
+                        )
+                    if self._warehouse_db and item.wh_doc_id is not None:
+                        self._warehouse_db.update_document(
+                            item.wh_doc_id,
+                            status="error",
+                            error_message=str(exc) or "All retry attempts exhausted",
+                        )
                     error_text = f"❌ Не вдалося розпізнати документ після {max_retries} повторних спроб."
                     await self._update_status(item, error_text)
                     try:

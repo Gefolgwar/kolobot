@@ -538,10 +538,12 @@ async def test_worker_auto_save_warehouse_and_vector_store(tmp_path):
         )
 
         dp, bot, settings = build_app()
+        bot.download = AsyncMock(return_value=b"fake-image-bytes")
         bot.edit_message_text = AsyncMock()
         bot.send_message = AsyncMock()
         queue_service: DocumentQueueService = dp["queue_service"]
         queue_service._bot = bot
+        queue_service._retry_delays = (0.01, 0.01, 0.01)
         gateway = dp["gemini_gateway"]
         vector_store = dp["vector_store"]
         from kolobot.warehouse_db import WarehouseDB
