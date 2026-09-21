@@ -47,6 +47,7 @@ def test_load_config_returns_settings_with_defaults(monkeypatch, tmp_path):
         "RAG_TOP_K",
         "RAG_MAX_DISTANCE",
         "CONFIRM_TIMEOUT_SEC",
+        "QUEUE_ITEM_DELAY_SEC",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -63,8 +64,22 @@ def test_load_config_returns_settings_with_defaults(monkeypatch, tmp_path):
     assert settings.cooldown_sec == 60
     assert settings.rag_top_k == 3
     assert settings.confirm_timeout_sec == 600
+    assert settings.queue_item_delay_sec == 3.0
     assert settings.generate_model == "gemini-2.5-flash"
     assert settings.embed_model == "text-embedding-004"
+
+
+def test_load_config_custom_queue_item_delay(monkeypatch, tmp_path):
+    monkeypatch.setenv("BOT_TOKEN", "token-xyz")
+    monkeypatch.setenv("OWNER_USER_ID", "99")
+    monkeypatch.setenv("GEMINI_KEYS_GENERATE", "g1")
+    monkeypatch.setenv("GEMINI_KEYS_EMBED", "e1")
+    monkeypatch.setenv("CHROMA_PATH", str(tmp_path / "chroma"))
+    monkeypatch.setenv("DOWNLOADS_PATH", str(tmp_path / "dl"))
+    monkeypatch.setenv("QUEUE_ITEM_DELAY_SEC", "5.5")
+
+    settings = load_config(dotenv_path="")
+    assert settings.queue_item_delay_sec == 5.5
 
 
 def test_load_config_fails_on_empty_generate_keys(monkeypatch, tmp_path):

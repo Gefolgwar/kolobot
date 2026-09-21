@@ -28,6 +28,7 @@ class Settings:
     rag_top_k: int = 3
     rag_max_distance: float = 1.2
     confirm_timeout_sec: int = 600
+    queue_item_delay_sec: float = 3.0
     generate_model: str = "gemini-2.5-flash"
     embed_model: str = "text-embedding-004"
     warehouse_db_path: str = ""
@@ -114,6 +115,7 @@ def load_config(*, dotenv_path: str | None = None) -> Settings:
         rag_top_k=_int_env("RAG_TOP_K", 3),
         rag_max_distance=_float_env("RAG_MAX_DISTANCE", 1.2),
         confirm_timeout_sec=_int_env("CONFIRM_TIMEOUT_SEC", 600),
+        queue_item_delay_sec=_float_env("QUEUE_ITEM_DELAY_SEC", 3.0),
         generate_model=os.getenv("GEMINI_GENERATE_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash",
         embed_model=os.getenv("GEMINI_EMBED_MODEL", "text-embedding-004").strip() or "text-embedding-004",
         web_enabled=web_enabled,

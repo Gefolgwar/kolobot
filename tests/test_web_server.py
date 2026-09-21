@@ -217,6 +217,34 @@ async def test_api_completed_document_reports_completed_status(warehouse_env):
 
 
 @pytest.mark.asyncio
+async def test_web_server_processing_status_badges(warehouse_env):
+    """Issue #13: Web UI exposes processing_ocr and processing_emb statuses and badges."""
+    db, fs, vs = warehouse_env
+    doc1 = db.add_document(filename="d1.jpg", file_type="photo", status="processing_ocr")
+    doc2 = db.add_document(filename="d2.jpg", file_type="photo", status="processing_emb")
+
+    server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
+    client = TestClient(TestServer(server._app))
+    await client.start_server()
+
+    try:
+        resp = await client.get("/api/warehouse/documents")
+        docs = await resp.json()
+        docs_by_id = {d["id"]: d for d in docs}
+        assert docs_by_id[doc1]["status"] == "processing_ocr"
+        assert docs_by_id[doc2]["status"] == "processing_emb"
+
+        html_resp = await client.get("/")
+        html = await html_resp.text()
+        assert "🔄 Розпізнавання" in html
+        assert "🧠 Embeddings" in html
+    finally:
+        await client.close()
+        db.close()
+
+
+
+@pytest.mark.asyncio
 async def test_api_document_ocr(warehouse_env):
     db, fs, vs = warehouse_env
     doc_id = db.add_document(

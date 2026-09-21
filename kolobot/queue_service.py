@@ -85,6 +85,8 @@ class DocumentQueueService:
         on_error: Optional[Callable[[QueueItem, Exception], Awaitable[None]]] = None,
         on_status_update: Optional[Callable[[QueueItem, str], Awaitable[None]]] = None,
         retry_delays: tuple[float, ...] = DEFAULT_RETRY_DELAYS,
+        item_delay_sec: float = 0.0,
+        warehouse_db: Optional[Any] = None,
     ) -> None:
         self._gateway = gateway
         self._doc_structurer = doc_structurer
@@ -95,6 +97,8 @@ class DocumentQueueService:
         self._on_error = on_error
         self._on_status_update = on_status_update
         self._retry_delays = tuple(float(d) for d in retry_delays)
+        self._item_delay_sec = float(item_delay_sec)
+        self._warehouse_db = warehouse_db
 
         self._queue: asyncio.Queue[QueueItem] = asyncio.Queue()
         self._pending_cards: Dict[str, PendingCard] = {}
@@ -283,6 +287,8 @@ class DocumentQueueService:
             finally:
                 self._current_item = None
                 self._queue.task_done()
+                if self._item_delay_sec > 0 and self._running:
+                    await asyncio.sleep(self._item_delay_sec)
 
     async def _update_status(self, item: QueueItem, text: str) -> None:
         """Update live status message in Telegram or notify callback."""
@@ -304,6 +310,10 @@ class DocumentQueueService:
 
     async def _process_item(self, item: QueueItem) -> None:
         """Download file, call Gemini OCR extraction with exponential retry logic, parse with DocStructurer, register PendingCard."""
+        if self._warehouse_db and item.wh_doc_id is not None:
+            self._warehouse_db.update_document(item.wh_doc_id, status="processing_ocr")
+            await self._update_status(item, f"🔄 Розпізнавання (#{item.wh_doc_id})...")
+
         max_retries = len(self._retry_delays)
         total_attempts = 1 + max_retries
 
@@ -359,6 +369,10 @@ class DocumentQueueService:
 
                 if result.doc is None or result.doc.is_empty:
                     raise ValueError("Document recognition returned empty result")
+
+                if self._warehouse_db and item.wh_doc_id is not None:
+                    self._warehouse_db.update_document(item.wh_doc_id, status="processing_emb")
+                    await self._update_status(item, f"🧠 Embeddings (#{item.wh_doc_id})...")
 
                 # 4. Generate unique short card_id and create PendingCard
                 card_id = self._generate_card_id()

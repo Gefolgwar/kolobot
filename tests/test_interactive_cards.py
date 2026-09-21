@@ -512,6 +512,91 @@ async def test_media_intake_does_not_register_queued_document_for_duplicate(tmp_
 
 
 @pytest.mark.asyncio
+async def test_worker_auto_save_warehouse_and_vector_store(tmp_path):
+    """Issue #13: Processed queue items are automatically saved to warehouse & RAG without inline button confirmation."""
+    with patch("kolobot.main.load_config") as mock_conf:
+        mock_conf.return_value = SimpleNamespace(
+            bot_token="12345:test_token",
+            gemini_keys_generate=["gen_key_1"],
+            gemini_keys_embed=["emb_key_1"],
+            rpm_limit=60,
+            rpd_limit=1000,
+            cooldown_sec=60,
+            downloads_path=str(tmp_path / "downloads"),
+            chroma_path=str(tmp_path / "chroma"),
+            warehouse_db_path=str(tmp_path / "warehouse.db"),
+            owner_user_id=100,
+            generate_model="gemini-2.5-flash",
+            embed_model="text-embedding-004",
+            rag_top_k=5,
+            rag_max_distance=1.0,
+            confirm_timeout_sec=600,
+            queue_item_delay_sec=0.0,
+            web_enabled=False,
+            web_host="0.0.0.0",
+            web_port=8080,
+        )
+
+        dp, bot, settings = build_app()
+        bot.edit_message_text = AsyncMock()
+        bot.send_message = AsyncMock()
+        queue_service: DocumentQueueService = dp["queue_service"]
+        queue_service._bot = bot
+        gateway = dp["gemini_gateway"]
+        vector_store = dp["vector_store"]
+        from kolobot.warehouse_db import WarehouseDB
+
+        # Mock OCR extraction
+        gateway.extract_document = AsyncMock(
+            return_value='{"doc_type": "НАКЛАДНА", "title": "Накладна № 777", "doc_number": "777", "doc_date": "10.08.2026", "items": [{"name": "Болт М8", "quantity": "50", "unit": "шт"}], "raw_text": "НАКЛАДНА № 777 Болт М8 50 шт"}'
+        )
+        # Mock embedding
+        gateway.embed_texts = AsyncMock(return_value=[[0.1] * 768])
+
+        msg = _make_photo_message(user_id=100, file_id="auto_save_photo")
+        upd = Update(update_id=1, message=msg)
+        upd._bot = bot
+
+        await dp.feed_update(bot, upd)
+
+        # Wait for queue processing to complete
+        await queue_service.join()
+        await queue_service.stop()
+
+        # 1. Warehouse document status is 'completed'
+        wdb = WarehouseDB(settings.warehouse_db_path)
+        wdb.init_db()
+        try:
+            docs = wdb.get_documents()
+            assert len(docs) == 1
+            assert docs[0]["status"] == "completed"
+            assert docs[0]["doc_number"] == "777"
+            assert docs[0]["doc_type"] == "НАКЛАДНА"
+
+            # 2. Warehouse items and transactions were auto-created
+            items = wdb.get_items_with_balance()
+            assert len(items) == 1
+            assert items[0]["name"] == "Болт М8"
+            assert items[0]["balance"] == 50.0
+        finally:
+            wdb.close()
+
+        # 3. Document is indexed in vector store
+        assert vector_store.count(user_id=100) == 1
+
+        # 4. No pending unconfirmed cards remain
+        assert queue_service.get_pending_card_count() == 0
+
+        # 5. Telegram live message was edited with completion
+        edit_texts = [
+            call.kwargs.get("text") or call.args[2] if len(call.args) > 2 else call.kwargs.get("text", "")
+            for call in bot.edit_message_text.call_args_list
+        ]
+        assert any("Накладна № 777" in str(t) or "збережено" in str(t).lower() for t in edit_texts)
+
+
+
+@pytest.mark.asyncio
 async def test_clear_command_purges_queue_and_invalidates_cards(tmp_path):
     """Verify /clear command executes, cancels tasks, purges queue, and invalidates active cards."""
     with patch("kolobot.main.load_config") as mock_conf:

@@ -40,6 +40,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
         .badge-nakladna { background: rgba(16,185,129,0.15); color: #34d399; }
         .badge-vymoha { background: rgba(244,63,94,0.15); color: #fb7185; }
         .badge-queued { background: rgba(245,158,11,0.15); color: #fbbf24; }
+        .badge-ocr { background: rgba(59,130,246,0.15); color: #60a5fa; }
+        .badge-emb { background: rgba(168,85,247,0.15); color: #c084fc; }
         .progress-bar { transition: width 0.3s ease; }
         .cursor-blink { animation: blink 1s step-end infinite; }
         @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
@@ -929,9 +931,18 @@ function updateFilterCounts() {
 // ---- Documents ----
 
 const QUEUED_OCR_HINT = '⏳ Документ у черзі на розпізнавання. Текст з\'явиться після завершення обробки.';
+const PROCESSING_OCR_HINT = '🔄 Документ у процесі обробки. Текст з\'явиться після завершення.';
+
+function getOcrPlaceholder(status) {
+    if (status === 'queued') return QUEUED_OCR_HINT;
+    if (status === 'processing_ocr' || status === 'processing_emb') return PROCESSING_OCR_HINT;
+    return '(Розпізнаний текст відсутній)';
+}
 
 const DOC_STATUS_BADGES = {
     queued: { label: '⏳ В черзі', cls: 'badge-queued' },
+    processing_ocr: { label: '🔄 Розпізнавання', cls: 'badge-ocr' },
+    processing_emb: { label: '🧠 Embeddings', cls: 'badge-emb' },
     completed: { label: '✅ Готово', cls: 'badge-import' },
     error: { label: '❌ Помилка', cls: 'badge-expense' },
 };
@@ -1080,7 +1091,7 @@ async function reloadDocImpact(docId) {
             // OCR Text Box
             h += '<div class="glass rounded-xl p-3 border border-slate-800 bg-slate-900/60">';
             h += '<div class="text-xs font-semibold text-slate-400 mb-1.5 flex items-center gap-1.5"><i class="fa-solid fa-align-left text-blue-400"></i><span>Розпізнаний OCR текст з файлу:</span></div>';
-            h += '<pre id="ocr-acc-text-' + docId + '" class="bg-slate-950/80 p-3 rounded-lg border border-slate-800/80 text-slate-300 font-mono text-[11px] whitespace-pre-wrap break-words leading-relaxed max-h-[160px] overflow-y-auto select-text">' + (rawText ? esc(rawText) : (data.status === 'queued' ? esc(QUEUED_OCR_HINT) : '<span class="text-slate-500 italic">(Розпізнаний текст відсутній)</span>')) + '</pre>';
+            h += '<pre id="ocr-acc-text-' + docId + '" class="bg-slate-950/80 p-3 rounded-lg border border-slate-800/80 text-slate-300 font-mono text-[11px] whitespace-pre-wrap break-words leading-relaxed max-h-[160px] overflow-y-auto select-text">' + (rawText ? esc(rawText) : esc(getOcrPlaceholder(data.status))) + '</pre>';
             h += '</div>';
 
             // Items Impact Table
@@ -1346,7 +1357,7 @@ async function loadDocumentOcr(docId) {
         }
 
         currentOcrText = data.raw_text || '';
-        rawEl.textContent = currentOcrText || (data.status === 'queued' ? QUEUED_OCR_HINT : '(Розпізнаний текст відсутній)');
+        rawEl.textContent = currentOcrText || getOcrPlaceholder(data.status);
         numEl.textContent = data.doc_number || '—';
         dateEl.textContent = data.doc_date || '—';
 

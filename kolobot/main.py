@@ -499,29 +499,84 @@ def build_app():
     )
 
     async def _on_card_ready(pending_card: PendingCard) -> None:
-        full_text = format_card_text(pending_card.doc, pending_card.card)
-        kb = make_card_keyboard(pending_card.card_id)
+        doc = pending_card.doc
+        item = pending_card.item
 
-        if pending_card.item.status_message_id is not None:
+        # 1. Automatic save to archive / VectorStore (RAG)
+        save_result = await archive_svc.save(
+            title=doc.title,
+            summary=doc.summary,
+            key_value_pairs=doc.key_value_pairs,
+            raw_text=doc.raw_text,
+            tmp_path=item.tmp_path,
+            ext=item.ext,
+            user_id=item.user_id,
+            telegram_file_id=item.file_id,
+            file_unique_id=item.file_unique_id,
+            file_name=item.file_name,
+            mime=item.mime,
+            source=item.source,
+            doc_number=getattr(doc, "doc_number", ""),
+            doc_date=getattr(doc, "doc_date", ""),
+            items=getattr(doc, "items", []),
+            totals=getattr(doc, "totals", {}),
+            item_name=getattr(doc, "item_name", ""),
+            incoming=getattr(doc, "incoming", ""),
+            outgoing=getattr(doc, "outgoing", ""),
+            balance=getattr(doc, "balance", ""),
+            unit=getattr(doc, "unit", ""),
+            supplier=getattr(doc, "supplier", ""),
+            notes=getattr(doc, "notes", ""),
+        )
+
+        # 2. Automatic save to warehouse DB (items, transactions, completed status)
+        warehouse_msg = ""
+        if save_result.success:
+            try:
+                pending_dict = {
+                    "file_name": item.file_name,
+                    "ext": item.ext,
+                    "mime": item.mime,
+                }
+                warehouse_msg = _save_to_warehouse(
+                    warehouse_db,
+                    file_store,
+                    doc,
+                    pending_dict,
+                    save_result.doc_id,
+                    existing_doc_id=item.wh_doc_id,
+                )
+            except Exception as exc:
+                logger.warning("Warehouse save failed: %s", exc)
+                warehouse_msg = "⚠️ Помилка збереження в складську таблицю."
+
+        # Remove card from pending since it's auto-saved
+        queue_service.remove_card(pending_card.card_id)
+
+        # 3. Edit live status message in Telegram
+        card_text = format_card_text(doc, pending_card.card)
+        final_text = f"✅ Документ #{item.wh_doc_id or save_result.doc_id} збережено в архів та склад!\n\n{card_text}"
+        if warehouse_msg:
+            final_text += f"\n\n{warehouse_msg}"
+
+        if item.status_message_id is not None:
             try:
                 await bot.edit_message_text(
-                    chat_id=pending_card.item.chat_id,
-                    message_id=pending_card.item.status_message_id,
-                    text=full_text,
-                    reply_markup=kb,
+                    chat_id=item.chat_id,
+                    message_id=item.status_message_id,
+                    text=final_text,
                 )
                 return
             except Exception as exc:
-                logger.debug("Failed to edit Telegram status message %s: %s", pending_card.item.status_message_id, exc)
+                logger.debug("Failed to edit Telegram status message %s: %s", item.status_message_id, exc)
 
         try:
             await bot.send_message(
-                chat_id=pending_card.item.chat_id,
-                text=full_text,
-                reply_markup=kb,
+                chat_id=item.chat_id,
+                text=final_text,
             )
         except Exception as exc:
-            logger.error("Failed to send card message to chat %s: %s", pending_card.item.chat_id, exc)
+            logger.error("Failed to send card message to chat %s: %s", item.chat_id, exc)
 
     queue_service = DocumentQueueService(
         gateway=gateway,
@@ -529,6 +584,8 @@ def build_app():
         file_store=file_store,
         bot=bot,
         on_card_ready=_on_card_ready,
+        item_delay_sec=getattr(settings, "queue_item_delay_sec", 3.0),
+        warehouse_db=warehouse_db,
     )
 
     intake_service = DocumentIntakeService(
@@ -904,6 +961,10 @@ def build_app():
     # --- Build dispatcher ---
     dp = Dispatcher()
     dp["queue_service"] = queue_service
+    dp["gemini_gateway"] = gateway
+    dp["vector_store"] = vector_store
+    dp["archive_service"] = archive_svc
+    dp["warehouse_db"] = warehouse_db
     access = AccessMiddleware(owner_user_id=settings.owner_user_id)
     dp.message.middleware(access)
     dp.callback_query.middleware(access)

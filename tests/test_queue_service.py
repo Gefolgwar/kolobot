@@ -617,6 +617,7 @@ async def test_queue_service_clear_cancels_inflight_task_and_restarts_worker(
     assert result.deleted_files == 2
 
     assert extract_cancelled.is_set()
+
     assert service.is_processing is False
     assert service.queue_size == 0
     assert service.is_running is True
@@ -645,6 +646,102 @@ async def test_queue_service_clear_cancels_inflight_task_and_restarts_worker(
     assert service.get_pending_card_count(100) == 1
     cards = service.list_pending_cards(100)
     assert cards[0].doc.title == "Новий документ після clear"
+
+
+@pytest.mark.asyncio
+async def test_queue_service_rate_limiting_delay_between_items(
+    mock_gateway, mock_file_store, doc_structurer, mock_bot, tmp_path
+):
+    """Verify that DocumentQueueService waits item_delay_sec between items."""
+    sleeps = []
+    real_sleep = asyncio.sleep
+
+    async def tracking_sleep(delay, *args, **kwargs):
+        sleeps.append(delay)
+        await real_sleep(0.001)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(asyncio, "sleep", tracking_sleep)
+        service = DocumentQueueService(
+            gateway=mock_gateway,
+            doc_structurer=doc_structurer,
+            file_store=mock_file_store,
+            bot=mock_bot,
+            item_delay_sec=3.0,
+        )
+
+        tmp1 = tmp_path / "f1.jpg"
+        tmp1.write_bytes(b"data1")
+        tmp2 = tmp_path / "f2.jpg"
+        tmp2.write_bytes(b"data2")
+
+        item1 = QueueItem(file_id="f1", file_unique_id="u1", mime="image/jpeg", file_size=10, tmp_path=str(tmp1), chat_id=1, user_id=1)
+        item2 = QueueItem(file_id="f2", file_unique_id="u2", mime="image/jpeg", file_size=10, tmp_path=str(tmp2), chat_id=1, user_id=1)
+
+        await service.enqueue(item1)
+        await service.enqueue(item2)
+        await service.join()
+        assert 3.0 in sleeps
+        await service.stop()
+
+
+@pytest.mark.asyncio
+async def test_queue_service_document_status_transitions(
+    mock_gateway, mock_file_store, doc_structurer, mock_bot, tmp_path
+):
+    """Issue #13: Document transitions queued -> processing_ocr -> processing_emb in DB and Telegram."""
+    from kolobot.warehouse_db import WarehouseDB
+
+    db = WarehouseDB(str(tmp_path / "wh.db"))
+    db.init_db()
+    try:
+        doc_id = db.add_document(filename="test.jpg", file_type="photo", status="queued")
+        assert db.get_document(doc_id)["status"] == "queued"
+
+        status_updates = []
+
+        async def track_status(item, text):
+            status_updates.append((item.wh_doc_id, text, db.get_document(doc_id)["status"]))
+
+        service = DocumentQueueService(
+            gateway=mock_gateway,
+            doc_structurer=doc_structurer,
+            file_store=mock_file_store,
+            bot=mock_bot,
+            warehouse_db=db,
+            on_status_update=track_status,
+        )
+
+        tmp_file = tmp_path / "test.jpg"
+        tmp_file.write_bytes(b"image-content")
+
+        item = QueueItem(
+            file_id="fid_999",
+            file_unique_id="uid_999",
+            mime="image/jpeg",
+            file_size=100,
+            tmp_path=str(tmp_file),
+            chat_id=1,
+            user_id=1,
+            status_message_id=42,
+            wh_doc_id=doc_id,
+        )
+
+        await service.enqueue(item)
+        await service.join()
+        await service.stop()
+
+        # Check DB status after OCR and emb phase
+        assert db.get_document(doc_id)["status"] == "processing_emb"
+
+        # Check Telegram edit message was called for both stages
+        texts = [call.kwargs.get("text") or call.args[2] if len(call.args) > 2 else call.kwargs.get("text", "") for call in mock_bot.edit_message_text.call_args_list]
+        assert any("Розпізнавання" in str(t) for t in texts)
+        assert any("Embeddings" in str(t) for t in texts)
+    finally:
+        db.close()
+
+
 
 
 
