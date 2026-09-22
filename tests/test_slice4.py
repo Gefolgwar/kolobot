@@ -261,11 +261,11 @@ async def test_web_ui_contains_smart_polling_and_retry_button(warehouse_env):
 # =========================================================================
 
 @pytest.mark.asyncio
-async def test_batch_media_duplicate_skipped_and_batch_continues(tmp_path):
+async def test_batch_media_duplicate_prompts_and_batch_continues(tmp_path):
     """
-    When files are sent as a batch (media_group_id present), duplicate files
-    are gently skipped with a chat notification, while non-duplicate files in
-    the same batch are accepted and enqueued.
+    When files are sent as a batch (media_group_id present), a duplicate file
+    gets the same interactive prompt as a standalone one, while non-duplicate
+    files in the same batch are accepted and enqueued.
     """
     with patch("kolobot.main.load_config") as mock_conf:
         mock_conf.return_value = SimpleNamespace(
@@ -322,17 +322,21 @@ async def test_batch_media_duplicate_skipped_and_batch_continues(tmp_path):
             assert "photo_c" in enqueued_files
             assert "photo_b" not in enqueued_files
 
-            # Duplicate file B must receive a soft skip notification, NOT inline keyboard
+            # Duplicate file B must receive the interactive dedup keyboard
             assert msg_b.answer.await_count >= 1
             b_answers = [call.args[0] for call in msg_b.answer.await_args_list if call.args]
-            assert any("дублікат" in txt.lower() or "пропущено" in txt.lower() or "вже є" in txt.lower() for txt in b_answers)
+            assert any("вже є в архіві" in txt for txt in b_answers)
 
-            # Ensure msg_b did not send inline buttons (reply_markup=None or not containing dedup_open)
+            found_kb = False
             for call in msg_b.answer.await_args_list:
                 kb = call.kwargs.get("reply_markup")
-                if kb:
+                if kb and isinstance(kb, InlineKeyboardMarkup):
                     btn_data = [btn.callback_data for row in kb.inline_keyboard for btn in row]
-                    assert not any("dedup_force" in d for d in btn_data)
+                    if any("dedup_open:existing_123" == d for d in btn_data) and any(
+                        d.startswith("dedup_force:") for d in btn_data
+                    ):
+                        found_kb = True
+            assert found_kb, "Batch duplicate must present the same interactive keyboard as a standalone one"
 
 
 @pytest.mark.asyncio

@@ -637,7 +637,6 @@ def build_app():
         if intake is None:
             return
 
-        is_batch = bool(getattr(message, "media_group_id", None))
         unique_id = intake["file_unique_id"]
 
         # Dedup check in archive and active/queued queue
@@ -648,11 +647,6 @@ def build_app():
         is_dup = (existing is not None) or queue_service.has_file_unique_id(unique_id)
 
         if is_dup:
-            if is_batch:
-                name_str = f" «{intake['file_name']}»" if intake.get("file_name") else ""
-                await message.answer(f"⚠️ Файл{name_str} вже є в системі — дублікат пропущено.")
-                return
-
             dedup_id = uuid.uuid4().hex[:8]
             dedup_pending[dedup_id] = intake
             existing_id = existing["id"] if existing else ""
