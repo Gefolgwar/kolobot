@@ -29,13 +29,17 @@ OCR_PROMPT = (
     '  "unit": "Одиниці виміру (шт, кг, л, тощо)",\n'
     '  "doc_number": "Номер накладної або документа (наприклад 3, INV-001, 0000215)",\n'
     '  "supplier": "Постачальник або контрагент",\n'
+    '  "requested_by": "Хто ЗАТРЕБУВАВ документ — ПІБ та/або посада особи, що замовила видачу (поле \'ЗАТРЕБУВАВ\' у бланку)",\n'
+    '  "requested_via": "ЧЕРЕЗ КОГО — особа-посередник, через яку затребувано документ, як надруковано (напр. \'7939 - (ПІБ)\' або \'6461 - механік (ПІБ)\')",\n'
     '  "notes": "Примітки (додаткова важлива інформація)",\n'
     '  "items": [{"num": 1, "nomenclature_number": "355513018010", "name": "Item name", "quantity": "10", "unit": "шт", "price_no_vat": "150.00", "total_no_vat": "1500.00"}],\n'
     '  "totals": {"total_no_vat": "1975.00", "vat": "395.00", "total_with_vat": "2370.00"}\n'
     "}\n\n"
     "IMPORTANT FOR INVENTORY AND DOCUMENT TYPE:\n"
     "- For 'doc_type': determine the document type strictly from the actual printed title/header at the top of the document (top-left or centered header). If the printed header says 'НАКЛАДНА' (or 'Прибуткова накладна', 'Видаткова накладна', 'ТТН', etc.), set 'doc_type' to 'накладна'. If the printed header says 'ВИМОГА' (or 'Вимога-накладна', 'Акт списання', etc.), set 'doc_type' to 'вимога'. Otherwise use 'receipt', 'contract', 'id_card', 'note', or 'other'. Do NOT set 'вимога' if the document header is titled 'НАКЛАДНА'.\n"
-    "- Extract 'nomenclature_number', 'item_name', 'doc_date', 'incoming', 'outgoing', 'balance', 'unit', 'doc_number', 'supplier', 'notes' based on the main content of the document.\n"
+    "- Extract 'nomenclature_number', 'item_name', 'doc_date', 'incoming', 'outgoing', 'balance', 'unit', 'doc_number', 'supplier', 'requested_by', 'requested_via', 'notes' based on the main content of the document.\n"
+    "- 'requested_by' is the person who requested the document (the 'ЗАТРЕБУВАВ' field on the form), usually a position followed by a name. Copy it as printed. Do NOT confuse it with the 'ЗАТРЕБУВАНО' table column (requested quantity), and do NOT use 'ВІДПУСТИВ'/'ОДЕРЖАВ' values.\n"
+    "- 'requested_via' is the 'ЧЕРЕЗ КОГО' field of the same form — the intermediary through whom the document was requested, usually a code and/or position. Copy it as printed; do NOT confuse it with 'ЗАМОВЛЕННЯ' or 'СТ. ВИТРАТ' that follow it.\n"
     "- If the document is a 'вимога' (expense/видача/відпуск), the issued quantities go to 'outgoing' (Розхід). If the document is a 'накладна' (income/прихід), the incoming quantities go to 'incoming' (Прихід).\n"
     "- These fields will be displayed as a single row in an inventory ledger.\n"
     "- If a field is not present, leave it as an empty string.\n\n"

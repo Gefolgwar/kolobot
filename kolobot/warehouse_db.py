@@ -8,6 +8,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from kolobot.doc_structurer import extract_requested_by, extract_requested_via
+
 
 class WarehouseDB:
 
@@ -44,7 +46,9 @@ class WarehouseDB:
                 error_message TEXT NOT NULL DEFAULT '',
                 file_id TEXT NOT NULL DEFAULT '',
                 chat_id INTEGER NOT NULL DEFAULT 0,
-                user_id INTEGER NOT NULL DEFAULT 0
+                user_id INTEGER NOT NULL DEFAULT 0,
+                requested_by TEXT NOT NULL DEFAULT '',
+                requested_via TEXT NOT NULL DEFAULT ''
             );
 
             CREATE TABLE IF NOT EXISTS warehouse_items (
@@ -91,6 +95,12 @@ class WarehouseDB:
             self._conn.execute("ALTER TABLE documents ADD COLUMN chat_id INTEGER NOT NULL DEFAULT 0")
         if "user_id" not in doc_cols:
             self._conn.execute("ALTER TABLE documents ADD COLUMN user_id INTEGER NOT NULL DEFAULT 0")
+        if "requested_by" not in doc_cols:
+            self._conn.execute("ALTER TABLE documents ADD COLUMN requested_by TEXT NOT NULL DEFAULT ''")
+        if "requested_via" not in doc_cols:
+            self._conn.execute("ALTER TABLE documents ADD COLUMN requested_via TEXT NOT NULL DEFAULT ''")
+        if "requested_by" not in doc_cols or "requested_via" not in doc_cols:
+            self._backfill_requester_fields()
 
         cursor = self._conn.execute("PRAGMA table_info(warehouse_transactions)")
         tx_cols = {row[1] for row in cursor.fetchall()}
@@ -117,14 +127,33 @@ class WarehouseDB:
         file_id: str = "",
         chat_id: int = 0,
         user_id: int = 0,
+        requested_by: str = "",
+        requested_via: str = "",
     ) -> int:
         cur = self._conn.execute(
-            "INSERT INTO documents (filename, file_type, file_path, uploaded_at, doc_number, doc_date, raw_text, doc_type, status, file_id, chat_id, user_id) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (filename, file_type, file_path, time.time(), doc_number, doc_date, raw_text, doc_type, status, file_id, chat_id, user_id),
+            "INSERT INTO documents (filename, file_type, file_path, uploaded_at, doc_number, doc_date, raw_text, doc_type, status, file_id, chat_id, user_id, requested_by, requested_via) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (filename, file_type, file_path, time.time(), doc_number, doc_date, raw_text, doc_type, status, file_id, chat_id, user_id, requested_by, requested_via),
         )
         self._conn.commit()
         return cur.lastrowid
+
+    def _backfill_requester_fields(self) -> None:
+        """Одноразово заповнює затребуваного і 'через кого' для документів, збережених до появи колонок."""
+        rows = self._conn.execute(
+            "SELECT id, raw_text, requested_by, requested_via FROM documents WHERE raw_text != ''"
+        ).fetchall()
+        for doc_id, raw_text, requested_by, requested_via in rows:
+            if requested_by and requested_via:
+                continue
+            self._conn.execute(
+                "UPDATE documents SET requested_by = ?, requested_via = ? WHERE id = ?",
+                (
+                    requested_by or extract_requested_by(raw_text),
+                    requested_via or extract_requested_via(raw_text),
+                    doc_id,
+                ),
+            )
 
     def add_item(
         self,
@@ -388,7 +417,8 @@ class WarehouseDB:
             SELECT
                 wt.id, wt.operation_type, wt.quantity, wt.doc_number, wt.doc_date, wt.created_at,
                 wt.source_row,
-                d.id AS document_id, d.filename, d.file_type, d.file_path, d.doc_type
+                d.id AS document_id, d.filename, d.file_type, d.file_path, d.doc_type,
+                d.requested_by, d.requested_via
             FROM warehouse_transactions wt
             JOIN documents d ON wt.document_id = d.id
             WHERE wt.item_id = ?
@@ -411,7 +441,7 @@ class WarehouseDB:
             SELECT
                 d.id, d.filename, d.file_type, d.file_path, d.uploaded_at,
                 d.doc_number, d.doc_date, d.doc_type, d.raw_text,
-                d.status, d.error_message,
+                d.status, d.error_message, d.requested_by, d.requested_via,
                 COUNT(wt.id) AS transaction_count
             FROM documents d
             LEFT JOIN warehouse_transactions wt ON d.id = wt.document_id
@@ -438,7 +468,7 @@ class WarehouseDB:
         allowed = {
             "filename", "file_type", "file_path", "doc_number",
             "doc_date", "raw_text", "doc_type", "status", "error_message",
-            "file_id", "chat_id", "user_id",
+            "file_id", "chat_id", "user_id", "requested_by", "requested_via",
         }
         updates = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
         row = self._conn.execute(

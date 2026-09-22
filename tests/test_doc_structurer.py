@@ -336,4 +336,124 @@ def test_header_takes_precedence_over_model_doc_type_guess():
     assert op2 == "expense"
 
 
+def test_extract_requested_by_with_colon():
+    """Затребувач розпізнається, коли у тексті 'ЗАТРЕБУВАВ: <посада (ПІБ)>'."""
+    from kolobot.doc_structurer import extract_requested_by
 
+    text = "НАКЛАДНА № 0002143\nЧЕРЕЗ КОГО 7939 - (ПІБ)\nЗАТРЕБУВАВ: начальник служби (ПІБ)\n"
+    assert extract_requested_by(text) == "начальник служби (ПІБ)"
+
+
+def test_extract_requested_by_stops_at_table_header_on_flattened_line():
+    """OCR інколи зліплює весь заголовок в один рядок — значення не має тягнути за собою таблицю."""
+    from kolobot.doc_structurer import extract_requested_by
+
+    text = (
+        "НАКЛАДНА № 0003789 К.ГР 1 ДАТА 03.08.2026 ЛИСТ 1 ОПЕР 3 СКЛ 212 СКЛ ОТРИМ 402 "
+        "ЧЕРЕЗ КОГО 7939 - (ПІБ) ЗАМОВЛЕННЯ СТ. ВИТРАТ ЗАТРЕБУВАВ начальник служби (ПІБ) П "
+        "НОМЕНКЛАТУРНИЙ НОМЕР НАЙМЕНУВАННЯ, СОРТ, РОЗМІР МАТЕРІАЛУ ОД ВИМ КІЛЬКІСТЬ ЦІНА СУМА "
+        "ЗАТРЕБУВАНО ВІДПУЩЕНО 1 311224098765 КАБЕЛЬ СИЛОВИЙ ВВГ-П 3х1,5 ЧОРНИЙ ШТ 25.500000"
+    )
+    assert extract_requested_by(text) == "начальник служби (ПІБ)"
+
+
+def test_extract_requested_by_ignores_table_column_header():
+    """'ЗАТРЕБУВАНО' — це заголовок колонки таблиці, а не затребувач."""
+    from kolobot.doc_structurer import extract_requested_by
+
+    text = (
+        "ВИМОГА № 0000215\n"
+        "№ п/п | НОМЕНКЛАТУРНИЙ НОМЕР | НАЙМЕНУВАННЯ | ОД ВИМ | ЗАТРЕБУВАНО | ВІДПУЩЕНО | ЦІНА | СУМА\n"
+        "1 | 461993787922 | АКУМУЛЯТОРНА БАТАРЕЯ 60Ач | ШТ | 1.000000 | 1.000000 | 3100 | 3100\n"
+    )
+    assert extract_requested_by(text) == ""
+    assert extract_requested_by("") == ""
+
+
+
+
+def test_extract_requested_via_with_colon_and_code():
+    """'ЧЕРЕЗ КОГО' розпізнається разом із кодом підрозділу та посадою."""
+    from kolobot.doc_structurer import extract_requested_via
+
+    text = "НАКЛАДНА № 0002143\nЧЕРЕЗ КОГО: 6461 - механік (ПІБ)\nЗАТРЕБУВАВ: начальник служби (ПІБ)\n"
+    assert extract_requested_via(text) == "6461 - механік (ПІБ)"
+
+
+def test_extract_requested_via_tolerates_ocr_typo():
+    """OCR плутає Г/Т — 'ЧЕРЕЗ КОТО' має розпізнаватись нарівні з 'ЧЕРЕЗ КОГО'."""
+    from kolobot.doc_structurer import extract_requested_via
+
+    assert extract_requested_via("ЧЕРЕЗ КОТО: 6465 - механік (ПІБ)\n") == "6465 - механік (ПІБ)"
+    assert extract_requested_via("ЧЕРЕЗ КОГО\t7939 - (ПІБ)\tЗАМОВЛЕННЯ") == "7939 - (ПІБ)"
+
+
+def test_extract_requested_via_stops_at_next_form_field_on_flattened_line():
+    """На зліпленому рядку значення не тягне за собою 'ЗАМОВЛЕННЯ СТ. ВИТРАТ' і далі."""
+    from kolobot.doc_structurer import extract_requested_via
+
+    text = (
+        "НАКЛАДНА № 0003789 К.ГР 1 ДАТА 03.08.2026 ЛИСТ 1 ОПЕР 3 СКЛ 212 СКЛ ОТРИМ 402 "
+        "ЧЕРЕЗ КОГО 7939 - (ПІБ) ЗАМОВЛЕННЯ СТ. ВИТРАТ ЗАТРЕБУВАВ начальник служби (ПІБ) П "
+        "НОМЕНКЛАТУРНИЙ НОМЕР НАЙМЕНУВАННЯ, СОРТ, РОЗМІР МАТЕРІАЛУ"
+    )
+    assert extract_requested_via(text) == "7939 - (ПІБ)"
+
+
+def test_extract_requested_via_absent_returns_empty():
+    """Без поля 'ЧЕРЕЗ КОГО' значення порожнє — не підхоплюємо сусідні поля бланка."""
+    from kolobot.doc_structurer import extract_requested_via
+
+    assert extract_requested_via("НАКЛАДНА № 1\nЗАТРЕБУВАВ: начальник служби (ПІБ)\n") == ""
+    assert extract_requested_via("") == ""
+
+
+def test_parse_prefers_model_requested_by_field():
+    """Якщо Gemini повернув requested_by — беремо його."""
+    ds = DocStructurer()
+    result = ds.parse(json.dumps({
+        "doc_type": "накладна",
+        "title": "Накладна № 1",
+        "raw_text": "ЗАТРЕБУВАВ: з тексту (ПІБ)",
+        "requested_by": "з поля моделі (ПІБ)",
+    }))
+    assert result.status == ParseStatus.OK
+    assert result.doc.requested_by == "з поля моделі (ПІБ)"
+
+
+def test_parse_falls_back_to_raw_text_for_requested_by():
+    """Якщо поля від моделі немає — витягуємо з розпізнаного тексту."""
+    ds = DocStructurer()
+    result = ds.parse(json.dumps({
+        "doc_type": "накладна",
+        "title": "Накладна № 2",
+        "raw_text": "НАКЛАДНА № 0002143\nЗАТРЕБУВАВ начальник служби (ПІВ)\nБУХГАЛТЕР:",
+    }))
+    assert result.status == ParseStatus.OK
+    assert result.doc.requested_by == "начальник служби (ПІВ)"
+
+
+def test_parse_prefers_model_requested_via_field():
+    """Якщо Gemini повернув requested_via — беремо його."""
+    ds = DocStructurer()
+    result = ds.parse(json.dumps({
+        "doc_type": "накладна",
+        "title": "Накладна № 3",
+        "raw_text": "ЧЕРЕЗ КОГО: з тексту (ПІБ)",
+        "requested_via": "з поля моделі (ПІБ)",
+    }))
+    assert result.status == ParseStatus.OK
+    assert result.doc.requested_via == "з поля моделі (ПІБ)"
+
+
+def test_parse_falls_back_to_raw_text_for_requested_via():
+    """Якщо поля від моделі немає — 'ЧЕРЕЗ КОГО' витягуємо з розпізнаного тексту."""
+    ds = DocStructurer()
+    result = ds.parse(json.dumps({
+        "doc_type": "накладна",
+        "title": "Накладна № 4",
+        "raw_text": "НАКЛАДНА № 0002143\nЧЕРЕЗ КОГО 7939 - (ПІБ)\nЗАТРЕБУВАВ: начальник служби (ПІБ)",
+    }))
+    assert result.status == ParseStatus.OK
+    assert result.doc.requested_via == "7939 - (ПІБ)"
+    assert result.doc.requested_by == "начальник служби (ПІБ)"

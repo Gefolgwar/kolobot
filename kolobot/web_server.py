@@ -175,12 +175,14 @@ HTML_PAGE = r"""<!DOCTYPE html>
                             <th class="py-4 px-3">Статус</th>
                             <th class="py-4 px-3">Дата завантаження</th>
                             <th class="py-4 px-3">№ документа</th>
+                            <th class="py-4 px-3">Затребував</th>
+                            <th class="py-4 px-3">Через кого</th>
                             <th class="py-4 px-3">Позицій</th>
                             <th class="py-4 px-3 text-right">Дії</th>
                         </tr>
                     </thead>
                     <tbody id="docs-tbody" class="divide-y divide-slate-800/60 text-sm">
-                        <tr><td colspan="10" class="py-12 text-center text-slate-500">
+                        <tr><td colspan="12" class="py-12 text-center text-slate-500">
                             <p>Документів немає.</p>
                         </td></tr>
                     </tbody>
@@ -343,6 +345,14 @@ HTML_PAGE = r"""<!DOCTYPE html>
                             <div class="flex justify-between text-slate-300">
                                 <span class="text-slate-500">Тип операції:</span>
                                 <span id="ocr-meta-op" class="font-medium text-slate-200">—</span>
+                            </div>
+                            <div class="flex justify-between text-slate-300">
+                                <span class="text-slate-500">Затребував:</span>
+                                <span id="ocr-meta-requested-by" class="text-amber-200 text-right">—</span>
+                            </div>
+                            <div class="flex justify-between text-slate-300">
+                                <span class="text-slate-500">Через кого:</span>
+                                <span id="ocr-meta-requested-via" class="text-amber-200 text-right">—</span>
                             </div>
                         </div>
 
@@ -760,6 +770,8 @@ async function reloadTransactions(itemId) {
             '<th class="py-1 pr-3 text-left">Тип док.</th>' +
             '<th class="py-1 pr-3 text-right">Кількість</th><th class="py-1 pr-3 text-left">№ накл.</th>' +
             '<th class="py-1 pr-3 text-right">Залишок</th><th class="py-1 pr-3 text-left">Документ</th>' +
+            '<th class="py-1 pr-3 text-left">Затребував</th>' +
+            '<th class="py-1 pr-3 text-left">Через кого</th>' +
             '<th class="py-1 pr-3 text-left">Джерело</th>' +
             '</tr></thead><tbody>';
         txs.forEach(tx => {
@@ -784,6 +796,8 @@ async function reloadTransactions(itemId) {
                 docTypeBadge = `<span class="text-slate-400 text-[11px]">${esc(docType)}</span>`;
             }
             const srcRow = tx.source_row || '';
+            const requestedBy = tx.requested_by || '';
+            const requestedVia = tx.requested_via || '';
             let qtyDisplay = '';
             if (tx.quantity === 0) {
                 qtyDisplay = '<span class="text-slate-400 font-medium">0</span>';
@@ -810,6 +824,8 @@ async function reloadTransactions(itemId) {
                 <td class="py-2 pr-3 text-slate-300 font-mono">${esc(tx.doc_number)}</td>
                 <td class="py-2 pr-3 text-right text-blue-400 font-medium">${fmtNum(tx.running_balance)}</td>
                 <td class="py-2 pr-3">${docDisplay}</td>
+                <td class="py-2 pr-3 text-slate-300 max-w-[160px] truncate" title="${esc(requestedBy)}">${fmtRequestedBy(requestedBy)}</td>
+                <td class="py-2 pr-3 text-slate-300 max-w-[160px] truncate" title="${esc(requestedVia)}">${fmtRequestedBy(requestedVia)}</td>
                 <td class="py-2 pr-3 text-slate-500 text-[11px] max-w-[200px] truncate" title="${esc(srcRow)}">${esc(srcRow)}</td>
             </tr>`;
         });
@@ -1030,7 +1046,7 @@ async function fetchDocs() {
 function renderDocs(docs) {
     const tbody = document.getElementById('docs-tbody');
     if (docs.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="10" class="py-12 text-center text-slate-500"><p>Документів немає.</p></td></tr>';
+        tbody.innerHTML = '<tr><td colspan="12" class="py-12 text-center text-slate-500"><p>Документів немає.</p></td></tr>';
         return;
     }
     let html = '';
@@ -1039,6 +1055,8 @@ function renderDocs(docs) {
         const typeLabel = doc.file_type === 'excel' ? 'Excel' : (doc.file_type === 'photo' ? 'Фото' : 'PDF');
         const date = formatTs(doc.uploaded_at);
         const docType = doc.doc_type || '';
+        const requestedBy = doc.requested_by || '';
+        const requestedVia = doc.requested_via || '';
         let docTypeBadge = '';
         if (docType === 'НАКЛАДНА') {
             docTypeBadge = '<span class="px-2 py-0.5 rounded-full text-[11px] font-medium badge-nakladna"><i class="fa-solid fa-arrow-down mr-1"></i>Накладна</span>';
@@ -1081,6 +1099,12 @@ function renderDocs(docs) {
             <td class="py-4 px-3">${docStatusBadge(doc)}</td>
             <td class="py-4 px-3 text-slate-300">${date}</td>
             <td class="py-4 px-3 font-mono text-slate-300">${esc(doc.doc_number)}</td>
+            <td class="py-4 px-3 text-slate-300">
+                <span class="block max-w-[160px] truncate" title="${esc(requestedBy)}">${fmtRequestedBy(requestedBy)}</span>
+            </td>
+            <td class="py-4 px-3 text-slate-300">
+                <span class="block max-w-[105px] truncate" title="${esc(requestedVia)}">${fmtRequestedBy(requestedVia)}</span>
+            </td>
             <td class="py-4 px-3 text-blue-400 font-medium">${doc.transaction_count}</td>
             <td class="py-4 px-3 text-right">
                 ${retryBtn}<button onclick="event.stopPropagation(); openDeleteModal(${doc.id}, '${esc(doc.filename)}')" class="p-2 text-slate-400 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition" title="Видалити">
@@ -1089,7 +1113,7 @@ function renderDocs(docs) {
             </td>
         </tr>
         <tr id="doc-impact-row-${doc.id}" class="hidden">
-            <td colspan="10" class="p-0">
+            <td colspan="12" class="p-0">
                 <div class="expand-row px-8 py-4 border-t border-slate-800/40">
                     <div id="doc-impact-content-${doc.id}" class="text-xs text-slate-400">Завантаження...</div>
                 </div>
@@ -1148,6 +1172,12 @@ async function reloadDocImpact(docId) {
             }
             if (data.doc_date) {
                 h += '<span class="text-xs text-slate-300"><span class="text-slate-500">Дата:</span> ' + esc(data.doc_date) + '</span>';
+            }
+            if (data.requested_by) {
+                h += '<span class="text-xs text-slate-300"><span class="text-slate-500">Затребував:</span> <span class="text-amber-200">' + esc(data.requested_by) + '</span></span>';
+            }
+            if (data.requested_via) {
+                h += '<span class="text-xs text-slate-300"><span class="text-slate-500">Через кого:</span> <span class="text-amber-200">' + esc(data.requested_via) + '</span></span>';
             }
             h += '</div>';
             if (rawText) {
@@ -1401,6 +1431,8 @@ async function loadDocumentOcr(docId) {
     const numEl = document.getElementById('ocr-meta-num');
     const dateEl = document.getElementById('ocr-meta-date');
     const opEl = document.getElementById('ocr-meta-op');
+    const requestedByEl = document.getElementById('ocr-meta-requested-by');
+    const requestedViaEl = document.getElementById('ocr-meta-requested-via');
     const rawEl = document.getElementById('ocr-raw-text');
     const itemsBox = document.getElementById('ocr-items-box');
     const itemsList = document.getElementById('ocr-items-list');
@@ -1411,6 +1443,8 @@ async function loadDocumentOcr(docId) {
     numEl.textContent = '—';
     dateEl.textContent = '—';
     opEl.textContent = '—';
+    if (requestedByEl) requestedByEl.textContent = '—';
+    if (requestedViaEl) requestedViaEl.textContent = '—';
     docTypeBadge.innerHTML = '';
     itemsBox.classList.add('hidden');
     itemsList.innerHTML = '';
@@ -1427,6 +1461,8 @@ async function loadDocumentOcr(docId) {
         rawEl.textContent = currentOcrText || getOcrPlaceholder(data.status);
         numEl.textContent = data.doc_number || '—';
         dateEl.textContent = data.doc_date || '—';
+        if (requestedByEl) requestedByEl.textContent = data.requested_by || '—';
+        if (requestedViaEl) requestedViaEl.textContent = data.requested_via || '—';
 
         const dt = (data.doc_type || '').toUpperCase();
         if (dt === 'НАКЛАДНА') {
@@ -1705,6 +1741,9 @@ function getFileIcon(ft) {
     if (ft === 'excel') return '<i class="fa-solid fa-file-excel text-green-500"></i>';
     if (ft === 'pdf') return '<i class="fa-solid fa-file-pdf text-red-400"></i>';
     return '<i class="fa-solid fa-image text-emerald-400"></i>';
+}
+function fmtRequestedBy(v) {
+    return v ? esc(v) : '<span class="text-slate-600">—</span>';
 }
 
 // ---- Log Console Logic ----
@@ -2175,6 +2214,8 @@ class WebServer:
             "doc_type": doc.get("doc_type", ""),
             "doc_number": doc.get("doc_number", ""),
             "doc_date": doc.get("doc_date", ""),
+            "requested_by": doc.get("requested_by", ""),
+            "requested_via": doc.get("requested_via", ""),
             "raw_text": raw_text,
             "impact": impact,
             "status": doc.get("status", "completed"),

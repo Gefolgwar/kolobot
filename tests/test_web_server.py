@@ -1087,3 +1087,63 @@ async def test_api_min_balance_excel_export_and_import(warehouse_env, tmp_path):
         db.close()
 
 
+@pytest.mark.asyncio
+async def test_api_documents_and_transactions_expose_requested_by(warehouse_env):
+    """У "Документах" і в розгорнутому рядку "Складу" видно, хто затребував документ і через кого."""
+    db, fs, vs = warehouse_env
+    doc_id = db.add_document(
+        filename="vymoha.jpg",
+        file_type="photo",
+        doc_type="ВИМОГА",
+        raw_text="ВИМОГА № 0000215\nЧЕРЕЗ КОГО 7939 - (ПІБ)\nЗАТРЕБУВАВ: начальник служби (ПІБ)",
+        requested_by="начальник служби (ПІБ)",
+        requested_via="7939 - (ПІБ)",
+    )
+    item_id = db.add_item(name="Болт М8", sku="12345")
+    db.add_transaction(
+        item_id=item_id, document_id=doc_id,
+        operation_type="expense", quantity=5,
+    )
+
+    server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
+    client = TestClient(TestServer(server._app))
+    await client.start_server()
+
+    try:
+        docs = await (await client.get("/api/warehouse/documents")).json()
+        assert docs[0]["requested_by"] == "начальник служби (ПІБ)"
+        assert docs[0]["requested_via"] == "7939 - (ПІБ)"
+
+        txs = await (await client.get(f"/api/warehouse/items/{item_id}/transactions")).json()
+        assert txs[0]["requested_by"] == "начальник служби (ПІБ)"
+        assert txs[0]["requested_via"] == "7939 - (ПІБ)"
+
+        ocr = await (await client.get(f"/api/warehouse/documents/{doc_id}/ocr")).json()
+        assert ocr["requested_by"] == "начальник служби (ПІБ)"
+        assert ocr["requested_via"] == "7939 - (ПІБ)"
+    finally:
+        await client.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_documents_table_has_requested_by_column(warehouse_env):
+    """"Документи" мають однойменну колонку, "Склад" — колонку в таблиці транзакцій."""
+    db, fs, vs = warehouse_env
+    server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
+    client = TestClient(TestServer(server._app))
+    await client.start_server()
+
+    try:
+        html = await (await client.get("/")).text()
+        docs_head = html.split('id="docs-tbody"')[0]
+        assert docs_head.count("Затребував") == 1
+        assert docs_head.count("Через кого") == 1
+        assert "tx.requested_by" in html
+        assert "tx.requested_via" in html
+    finally:
+        await client.close()
+        db.close()
+
+
+

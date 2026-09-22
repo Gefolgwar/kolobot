@@ -408,4 +408,200 @@ def test_update_document_unknown_id_returns_false(warehouse_db):
     assert warehouse_db.update_document(9999, status="completed") is False
 
 
+def test_add_document_persists_requested_by(warehouse_db):
+    """Затребувач зберігається в документі і віддається в списку документів."""
+    doc_id = warehouse_db.add_document(
+        filename="nakladna_1.jpg",
+        file_type="photo",
+        requested_by="начальник служби (ПІБ)",
+    )
+
+    doc = warehouse_db.get_document(doc_id)
+    assert doc["requested_by"] == "начальник служби (ПІБ)"
+
+    docs = warehouse_db.get_documents()
+    assert docs[0]["requested_by"] == "начальник служби (ПІБ)"
+
+
+def test_update_document_can_set_requested_by(warehouse_db):
+    """Затребувач дописується у вже наявний документ (напр. після повторного розпізнавання)."""
+    doc_id = warehouse_db.add_document(filename="nakladna_2.jpg", file_type="photo")
+
+    assert warehouse_db.update_document(doc_id, requested_by="механік (ПІБ)") is True
+    assert warehouse_db.get_document(doc_id)["requested_by"] == "механік (ПІБ)"
+
+
+def test_item_transactions_expose_document_requested_by(warehouse_db):
+    """У розгорнутому рядку позиції (Склад) видно, хто затребував кожен документ."""
+    doc_id = warehouse_db.add_document(
+        filename="vymoha.jpg",
+        file_type="photo",
+        doc_type="ВИМОГА",
+        requested_by="начальник служби (ПІБ)",
+    )
+    item_id = warehouse_db.add_item(name="Болт М8", sku="SKU-001", unit="шт")
+    warehouse_db.add_transaction(
+        item_id=item_id,
+        document_id=doc_id,
+        operation_type="expense",
+        quantity=5.0,
+    )
+
+    txs = warehouse_db.get_item_transactions(item_id)
+    assert len(txs) == 1
+    assert txs[0]["requested_by"] == "начальник служби (ПІБ)"
+
+
+def test_add_document_persists_requested_via(warehouse_db):
+    """'Через кого' зберігається в документі і віддається в списку документів."""
+    doc_id = warehouse_db.add_document(
+        filename="nakladna_1.jpg",
+        file_type="photo",
+        requested_via="7939 - (ПІБ)",
+    )
+
+    doc = warehouse_db.get_document(doc_id)
+    assert doc["requested_via"] == "7939 - (ПІБ)"
+
+    docs = warehouse_db.get_documents()
+    assert docs[0]["requested_via"] == "7939 - (ПІБ)"
+
+
+def test_update_document_can_set_requested_via(warehouse_db):
+    """'Через кого' дописується у вже наявний документ (напр. після повторного розпізнавання)."""
+    doc_id = warehouse_db.add_document(filename="nakladna_2.jpg", file_type="photo")
+
+    assert warehouse_db.update_document(doc_id, requested_via="6461 - механік (ПІБ)") is True
+    assert warehouse_db.get_document(doc_id)["requested_via"] == "6461 - механік (ПІБ)"
+
+
+def test_item_transactions_expose_document_requested_via(warehouse_db):
+    """У розгорнутому рядку позиції (Склад) видно, через кого отримано кожен документ."""
+    doc_id = warehouse_db.add_document(
+        filename="vymoha.jpg",
+        file_type="photo",
+        doc_type="ВИМОГА",
+        requested_via="7939 - (ПІБ)",
+    )
+    item_id = warehouse_db.add_item(name="Болт М8", sku="SKU-001", unit="шт")
+    warehouse_db.add_transaction(
+        item_id=item_id,
+        document_id=doc_id,
+        operation_type="expense",
+        quantity=5.0,
+    )
+
+    txs = warehouse_db.get_item_transactions(item_id)
+    assert len(txs) == 1
+    assert txs[0]["requested_via"] == "7939 - (ПІБ)"
+
+
+def test_migration_backfills_requester_fields_from_existing_raw_text(tmp_path):
+    """Документи, збережені до появи полів, отримують затребувача і 'через кого' зі свого OCR-тексту."""
+    db_path = str(tmp_path / "legacy.db")
+
+    # БД попередньої версії: колонок requested_by / requested_via ще немає.
+    conn = sqlite3.connect(db_path)
+    conn.executescript("""
+        CREATE TABLE documents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            filename TEXT NOT NULL,
+            file_type TEXT NOT NULL,
+            file_path TEXT NOT NULL DEFAULT '',
+            uploaded_at REAL NOT NULL,
+            doc_number TEXT NOT NULL DEFAULT '',
+            doc_date TEXT NOT NULL DEFAULT '',
+            raw_text TEXT NOT NULL DEFAULT '',
+            doc_type TEXT NOT NULL DEFAULT ''
+        );
+        CREATE TABLE warehouse_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sku TEXT NOT NULL DEFAULT '',
+            name TEXT NOT NULL,
+            unit TEXT NOT NULL DEFAULT '',
+            supplier TEXT NOT NULL DEFAULT '',
+            notes TEXT NOT NULL DEFAULT ''
+        );
+        CREATE TABLE warehouse_transactions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            item_id INTEGER NOT NULL REFERENCES warehouse_items(id),
+            document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+            operation_type TEXT NOT NULL CHECK(operation_type IN ('income', 'expense')),
+            quantity REAL NOT NULL DEFAULT 0,
+            doc_number TEXT NOT NULL DEFAULT '',
+            doc_date TEXT NOT NULL DEFAULT '',
+            created_at REAL NOT NULL
+        );
+    """)
+    conn.execute(
+        "INSERT INTO documents (filename, file_type, uploaded_at, raw_text, doc_type) VALUES (?, ?, ?, ?, ?)",
+        (
+            "old_nakladna.jpg",
+            "photo",
+            1.0,
+            "НАКЛАДНА № 0002143\nЧЕРЕЗ КОГО 7939 - (ПІБ)\nЗАТРЕБУВАВ: начальник служби (ПІБ)\nБУХГАЛТЕР:",
+            "НАКЛАДНА",
+        ),
+    )
+    conn.execute(
+        "INSERT INTO documents (filename, file_type, uploaded_at, raw_text, doc_type) VALUES (?, ?, ?, ?, ?)",
+        ("old_excel.xlsx", "excel", 2.0, "", ""),
+    )
+    conn.commit()
+    conn.close()
+
+    db = WarehouseDB(db_path=db_path)
+    db.init_db()
+    try:
+        docs = {d["filename"]: d for d in db.get_documents()}
+        assert docs["old_nakladna.jpg"]["requested_by"] == "начальник служби (ПІБ)"
+        assert docs["old_nakladna.jpg"]["requested_via"] == "7939 - (ПІБ)"
+        assert docs["old_excel.xlsx"]["requested_by"] == ""
+        assert docs["old_excel.xlsx"]["requested_via"] == ""
+    finally:
+        db.close()
+
+
+def test_migration_handles_db_that_already_has_requested_by(tmp_path):
+    """БД, мігрована попередньою версією (є requested_by, немає requested_via), дозаповнюється коректно."""
+    db_path = str(tmp_path / "half_migrated.db")
+
+    conn = sqlite3.connect(db_path)
+    conn.executescript("""
+        CREATE TABLE documents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            filename TEXT NOT NULL,
+            file_type TEXT NOT NULL,
+            file_path TEXT NOT NULL DEFAULT '',
+            uploaded_at REAL NOT NULL,
+            doc_number TEXT NOT NULL DEFAULT '',
+            doc_date TEXT NOT NULL DEFAULT '',
+            raw_text TEXT NOT NULL DEFAULT '',
+            doc_type TEXT NOT NULL DEFAULT '',
+            requested_by TEXT NOT NULL DEFAULT ''
+        );
+    """)
+    conn.execute(
+        "INSERT INTO documents (filename, file_type, uploaded_at, raw_text, requested_by) VALUES (?, ?, ?, ?, ?)",
+        (
+            "half.jpg",
+            "photo",
+            1.0,
+            "НАКЛАДНА № 1\nЧЕРЕЗ КОГО 7939 - (ПІБ)\nЗАТРЕБУВАВ: начальник служби (ПІБ)",
+            "",
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    db = WarehouseDB(db_path=db_path)
+    db.init_db()
+    try:
+        doc = db.get_documents()[0]
+        assert doc["requested_by"] == "начальник служби (ПІБ)"
+        assert doc["requested_via"] == "7939 - (ПІБ)"
+    finally:
+        db.close()
+
+
 

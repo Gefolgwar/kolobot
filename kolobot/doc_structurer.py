@@ -15,6 +15,59 @@ class ParseStatus(str, Enum):
     RAW_FALLBACK = "raw_fallback"
 
 
+_REQUESTED_BY_RE = re.compile(r"ЗАТРЕБУВАВ\b[:\s]*([^\n]*)", re.IGNORECASE)
+
+# OCR плутає Г/Т, тому приймаємо і "ЧЕРЕЗ КОТО".
+_REQUESTED_VIA_RE = re.compile(r"ЧЕРЕЗ\s+КО[ГТ]О\b[:\s]*([^\n]*)", re.IGNORECASE)
+
+# Наступні за значенням поля бланка / підписи / заголовки таблиці — межа значення,
+# коли OCR зліпив увесь бланк в один рядок.
+_FIELD_STOP_RE = re.compile(
+    r"\s+(?:"
+    r"НОМЕНКЛАТУРНИЙ|НАЙМЕНУВАННЯ|ЗАТРЕБУВАВ|ЗАТРЕБУВАНО|ВІДПУЩЕНО|КІЛЬКІСТЬ|ЦІНА|СУМА"
+    r"|ВІДПУСТИВ|ОДЕРЖАВ|ДОЗВОЛИВ|ОТРИМАВ|БУХГАЛТЕР"
+    r"|ЧЕРЕЗ\s+КОГО|ЗАМОВЛЕННЯ|СТ\.\s*ВИТРАТ|ЛИСТ|ОПЕР|СКЛ|ДАТА|К\.?\s?ГР|№"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _clean_field_value(value: str) -> str:
+    """Обрізає значення поля бланка на межі наступного поля й прибирає OCR-сміття."""
+    stop = _FIELD_STOP_RE.search(value)
+    if stop:
+        value = value[: stop.start()]
+    value = value.strip()
+
+    # Хвіст із одиничних символів — сміття від OCR заголовка таблиці ("... (ПІБ) П Р R").
+    while True:
+        trimmed = re.sub(r"\s+\S$", "", value)
+        if trimmed == value:
+            break
+        value = trimmed
+    return value
+
+
+def extract_requested_by(text: str) -> str:
+    """Extract the requester ('ЗАТРЕБУВАВ') from raw OCR text."""
+    if not text:
+        return ""
+    match = _REQUESTED_BY_RE.search(text)
+    if not match:
+        return ""
+    return _clean_field_value(match.group(1))
+
+
+def extract_requested_via(text: str) -> str:
+    """Extract the intermediary ('ЧЕРЕЗ КОГО') from raw OCR text."""
+    if not text:
+        return ""
+    match = _REQUESTED_VIA_RE.search(text)
+    if not match:
+        return ""
+    return _clean_field_value(match.group(1))
+
+
 def normalize_doc_type(
     doc_type: str = "",
     title: str = "",
@@ -114,6 +167,8 @@ class Document:
     unit: str = ""
     supplier: str = ""
     notes: str = ""
+    requested_by: str = ""
+    requested_via: str = ""
 
     @property
     def is_empty(self) -> bool:
@@ -170,6 +225,8 @@ class DocStructurer:
                     doc_date=fallback_meta.get("doc_date", ""),
                     items=fallback_meta.get("items", []),
                     totals=fallback_meta.get("totals", {}),
+                    requested_by=extract_requested_by(model_text),
+                    requested_via=extract_requested_via(model_text),
                 )
                 return ParseResult(status=ParseStatus.RAW_FALLBACK, doc=doc)
             return ParseResult(status=ParseStatus.NEEDS_RETRY)
@@ -222,6 +279,10 @@ class DocStructurer:
             unit=str(data.get("unit", "") or ""),
             supplier=str(data.get("supplier", "") or ""),
             notes=str(data.get("notes", "") or ""),
+            requested_by=str(data.get("requested_by", "") or "")
+            or extract_requested_by(raw_text),
+            requested_via=str(data.get("requested_via", "") or "")
+            or extract_requested_via(raw_text),
         )
         if not doc.title and doc.raw_text:
             doc.title = doc.raw_text[:80]

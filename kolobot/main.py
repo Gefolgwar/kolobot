@@ -298,6 +298,8 @@ def _save_to_warehouse(
             doc_type=doc_type_label,
             status="completed",
             error_message="",
+            requested_by=getattr(doc, "requested_by", ""),
+            requested_via=getattr(doc, "requested_via", ""),
         )
         wh_doc_id = existing_doc_id
     else:
@@ -309,6 +311,8 @@ def _save_to_warehouse(
             doc_date=getattr(doc, "doc_date", ""),
             raw_text=raw_text,
             doc_type=doc_type_label,
+            requested_by=getattr(doc, "requested_by", ""),
+            requested_via=getattr(doc, "requested_via", ""),
         )
 
     items_list = getattr(doc, "items", []) or []

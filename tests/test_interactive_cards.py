@@ -923,4 +923,55 @@ async def test_save_card_retry_status_updates_and_error(tmp_path):
             )
 
 
+def test_save_to_warehouse_persists_requested_by(tmp_path):
+    """Затребувач, розпізнаний з документа, потрапляє в складську таблицю."""
+    import json
+
+    from kolobot.main import _save_to_warehouse
+    from kolobot.warehouse_db import WarehouseDB
+
+    wdb = WarehouseDB(str(tmp_path / "wh.db"))
+    wdb.init_db()
+    fs = FileStore(downloads_path=str(tmp_path / "downloads"))
+
+    # Так само, як в продакшені: OCR-текст -> DocStructurer.parse -> _save_to_warehouse.
+    result = DocStructurer().parse(json.dumps({
+        "doc_type": "накладна",
+        "title": "Накладна № 0009101",
+        "doc_number": "0009101",
+        "raw_text": (
+            "НАКЛАДНА № 0009101\nЧЕРЕЗ КОГО 7939 - (ПІБ)\n"
+            "ЗАТРЕБУВАВ начальник служби (ПІБ)\nБУХГАЛТЕР:"
+        ),
+        "items": [{
+            "num": 1,
+            "nomenclature_number": "889900112233",
+            "name": "РОЗЕТКА ШТЕПСЕЛЬНА",
+            "quantity": "5",
+            "unit": "ШТ",
+        }],
+    }))
+
+    try:
+        _save_to_warehouse(
+            wdb=wdb,
+            fs=fs,
+            doc=result.doc,
+            pending={"file_name": "n9101.jpg", "mime": "image/jpeg", "ext": ".jpg"},
+            archive_doc_id="arc_n9101",
+        )
+
+        docs = wdb.get_documents()
+        assert len(docs) == 1
+        assert docs[0]["requested_by"] == "начальник служби (ПІБ)"
+        assert docs[0]["requested_via"] == "7939 - (ПІБ)"
+
+        item = next(i for i in wdb.get_items_with_balance() if i["sku"] == "889900112233")
+        txs = wdb.get_item_transactions(item["id"])
+        assert txs[0]["requested_by"] == "начальник служби (ПІБ)"
+        assert txs[0]["requested_via"] == "7939 - (ПІБ)"
+    finally:
+        wdb.close()
+
+
 
