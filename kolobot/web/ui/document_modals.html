@@ -1,0 +1,221 @@
+    <!-- Delete Confirmation Modal -->
+    <div id="delete-modal" class="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm hidden flex items-center justify-center p-4">
+        <div class="glass w-full max-w-md rounded-2xl p-6 border border-red-500/30 shadow-2xl text-center space-y-4">
+            <div class="w-12 h-12 rounded-full bg-red-500/10 text-red-400 flex items-center justify-center mx-auto text-xl border border-red-500/20">
+                <i class="fa-solid fa-triangle-exclamation"></i>
+            </div>
+            <div>
+                <h3 class="text-lg font-bold text-slate-100">Видалити документ?</h3>
+                <p id="delete-doc-name" class="text-sm text-red-300 mt-1 break-all"></p>
+                <p class="text-xs text-slate-500 mt-2">Усі транзакції цього документа будуть відкатані. Цю дію неможливо скасувати.</p>
+            </div>
+            <div class="flex items-center justify-center space-x-3 pt-2">
+                <button onclick="closeDeleteModal()" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-medium rounded-xl transition">
+                    Скасувати
+                </button>
+                <button id="confirm-delete-btn" class="px-4 py-2 bg-red-600 hover:bg-red-500 text-white text-sm font-medium rounded-xl transition shadow-lg shadow-red-600/30">
+                    Так, видалити
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Repeat Confirmation Modal -->
+    <div id="retry-modal" class="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm hidden flex items-center justify-center p-4">
+        <div class="glass w-full max-w-md rounded-2xl p-6 border border-amber-500/30 shadow-2xl text-center space-y-4">
+            <div class="w-12 h-12 rounded-full bg-amber-500/10 text-amber-400 flex items-center justify-center mx-auto text-xl border border-amber-500/20">
+                <i class="fa-solid fa-triangle-exclamation"></i>
+            </div>
+            <div>
+                <h3 class="text-lg font-bold text-slate-100">Повторити розпізнавання?</h3>
+                <p id="retry-doc-name" class="text-sm text-amber-300 mt-1 break-all"></p>
+                <p class="text-xs text-slate-500 mt-2">Розпізнавання замінить дані документа, тож ручні правки буде втрачено. Цю дію неможливо скасувати.</p>
+            </div>
+            <div class="flex items-center justify-center space-x-3 pt-2">
+                <button onclick="closeRetryModal()" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-medium rounded-xl transition">
+                    Скасувати
+                </button>
+                <button id="confirm-retry-btn" class="px-4 py-2 bg-amber-600 hover:bg-amber-500 text-white text-sm font-medium rounded-xl transition shadow-lg shadow-amber-600/30">
+                    Так, повторити
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Image Viewer Modal with Side-by-Side OCR Preview -->
+    <div id="img-modal" class="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur-md hidden flex items-center justify-center p-4">
+        <div class="glass w-full max-w-7xl max-h-[92vh] rounded-2xl flex flex-col border border-slate-700 shadow-2xl overflow-hidden">
+            <div class="px-6 py-3 border-b border-slate-800 flex flex-wrap items-center justify-between gap-y-2">
+                <h3 id="img-modal-title" class="font-semibold text-lg text-slate-100 flex items-center gap-2">
+                    <i class="fa-solid fa-image text-emerald-400"></i>
+                    <span>Перегляд</span>
+                </h3>
+                <div class="flex flex-wrap items-center gap-2">
+                    <div class="flex items-center bg-slate-800 rounded-lg border border-slate-700">
+                        <button id="img-zoom-out-btn" onclick="zoomImgOut()" class="px-2.5 py-1.5 text-slate-400 hover:text-white transition disabled:opacity-30 disabled:cursor-not-allowed" title="Зменшити (Ctrl+Scroll)">
+                            <i class="fa-solid fa-minus text-xs"></i>
+                        </button>
+                        <span id="img-zoom-label" class="px-2 py-1 text-xs text-slate-300 min-w-[56px] text-center select-none font-mono">100%</span>
+                        <button id="img-zoom-in-btn" onclick="zoomImgIn()" class="px-2.5 py-1.5 text-slate-400 hover:text-white transition disabled:opacity-30 disabled:cursor-not-allowed" title="Збільшити (Ctrl+Scroll)">
+                            <i class="fa-solid fa-plus text-xs"></i>
+                        </button>
+                    </div>
+                    <button onclick="resetImgZoom()" class="px-2.5 py-1.5 text-slate-400 hover:text-white bg-slate-800 rounded-lg border border-slate-700 transition text-xs" title="Скинути масштаб (100%)">
+                        <i class="fa-solid fa-expand"></i>
+                    </button>
+                    <button id="toggle-ocr-btn" onclick="toggleOcrPanel()" class="px-3 py-1.5 text-xs font-medium rounded-lg bg-blue-600/20 text-blue-400 border border-blue-500/30 hover:bg-blue-600/30 transition flex items-center gap-1.5" title="Показати/приховати текст OCR">
+                        <i class="fa-solid fa-align-left"></i>
+                        <span id="toggle-ocr-label">Текст OCR</span>
+                    </button>
+                    <button onclick="closeImgModal()" class="text-slate-400 hover:text-white p-1 rounded-lg">
+                        <i class="fa-solid fa-xmark text-lg"></i>
+                    </button>
+                </div>
+            </div>
+            <div class="flex-1 flex overflow-hidden min-h-[420px]">
+                <!-- Left: Image Canvas -->
+                <div id="img-modal-container" class="flex-1 overflow-auto flex bg-slate-950/70 relative p-4 min-w-0">
+                    <img id="img-modal-src" src="" alt="Документ" class="rounded-xl shadow-2xl m-auto shrink-0 select-none" draggable="false">
+                </div>
+                <!-- Right: OCR / Recognized Content Panel -->
+                <div id="ocr-panel" class="w-[440px] max-w-[45vw] border-l border-slate-800 bg-slate-900/95 flex flex-col overflow-hidden">
+                    <div class="p-3.5 border-b border-slate-800 flex items-center justify-between">
+                        <div class="flex items-center gap-2">
+                            <span class="text-xs font-semibold uppercase tracking-wider text-slate-400">Розпізнано</span>
+                            <span id="ocr-doc-type-badge"></span>
+                        </div>
+                        <button onclick="copyOcrText()" class="text-xs text-slate-400 hover:text-slate-200 px-2.5 py-1 bg-slate-800 hover:bg-slate-700 rounded-lg transition flex items-center gap-1">
+                            <i class="fa-solid fa-copy"></i>
+                            <span id="copy-text-label">Копіювати</span>
+                        </button>
+                    </div>
+                    <div class="flex-1 overflow-y-auto p-4 space-y-4 text-xs">
+                        <!-- Metadata summary -->
+                        <div id="ocr-meta-box" class="glass rounded-xl p-3 space-y-2 border border-slate-800">
+                            <div class="flex justify-between text-slate-300">
+                                <span class="text-slate-500">Номер:</span>
+                                <span id="ocr-meta-num" class="font-mono font-bold text-slate-200">—</span>
+                            </div>
+                            <div class="flex justify-between text-slate-300">
+                                <span class="text-slate-500">Дата:</span>
+                                <span id="ocr-meta-date" class="text-slate-200">—</span>
+                            </div>
+                            <div class="flex justify-between text-slate-300">
+                                <span class="text-slate-500">Тип операції:</span>
+                                <span id="ocr-meta-op" class="font-medium text-slate-200">—</span>
+                            </div>
+                            <div class="flex justify-between text-slate-300">
+                                <span class="text-slate-500">Затребував:</span>
+                                <span id="ocr-meta-requested-by" class="text-amber-200 text-right">—</span>
+                            </div>
+                            <div class="flex justify-between text-slate-300">
+                                <span class="text-slate-500">Через кого:</span>
+                                <span id="ocr-meta-requested-via" class="text-amber-200 text-right">—</span>
+                            </div>
+                        </div>
+
+                        <!-- Impact / Items table if present -->
+                        <div id="ocr-items-box" class="glass rounded-xl p-3 border border-slate-800 hidden">
+                            <div class="text-slate-400 font-semibold mb-2 flex items-center justify-between">
+                                <span>Позиції в документі</span>
+                                <span id="ocr-items-count" class="text-[10px] bg-slate-800 px-1.5 py-0.5 rounded text-blue-400">0</span>
+                            </div>
+                            <div id="ocr-items-list" class="space-y-1.5 max-h-48 overflow-y-auto pr-1"></div>
+                        </div>
+
+                        <!-- Full OCR raw text -->
+                        <div>
+                            <div class="text-slate-400 font-semibold mb-2 flex items-center justify-between">
+                                <span>Повний розпізнаний текст:</span>
+                            </div>
+                            <pre id="ocr-raw-text" class="bg-slate-950/80 p-3 rounded-xl border border-slate-800/80 text-slate-300 font-mono text-[11px] whitespace-pre-wrap break-words leading-relaxed max-h-[340px] overflow-y-auto select-text"></pre>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Excel Preview Modal -->
+    <div id="excel-modal" class="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur-md hidden flex items-center justify-center p-4">
+        <div class="glass w-full max-w-5xl max-h-[90vh] rounded-2xl flex flex-col border border-slate-700 shadow-2xl overflow-hidden">
+            <div class="px-6 py-4 border-b border-slate-800 flex items-center justify-between">
+                <h3 id="excel-modal-title" class="font-semibold text-lg text-slate-100 flex items-center gap-2">
+                    <i class="fa-solid fa-file-excel text-green-500"></i>
+                    <span>Перегляд Excel</span>
+                </h3>
+                <div class="flex items-center gap-2">
+                    <button id="excel-download-btn" onclick="" class="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-200 text-sm font-medium rounded-lg transition">
+                        <i class="fa-solid fa-download mr-1"></i> Завантажити
+                    </button>
+                    <button onclick="closeExcelModal()" class="text-slate-400 hover:text-white p-1 rounded-lg">
+                        <i class="fa-solid fa-xmark text-lg"></i>
+                    </button>
+                </div>
+            </div>
+            <div class="p-4 flex-1 overflow-auto bg-slate-950/50">
+                <div id="excel-modal-content" class="text-sm text-slate-300"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Import Progress Overlay -->
+    <div id="import-progress" class="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm hidden flex items-center justify-center p-4">
+        <div class="glass w-full max-w-md rounded-2xl p-6 border border-blue-500/30 shadow-2xl text-center space-y-4">
+            <div class="w-12 h-12 rounded-full bg-blue-500/10 text-blue-400 flex items-center justify-center mx-auto text-xl border border-blue-500/20">
+                <i class="fa-solid fa-spinner fa-spin"></i>
+            </div>
+            <div>
+                <h3 class="text-lg font-bold text-slate-100">Імпорт Excel</h3>
+                <p id="import-status" class="text-sm text-blue-300 mt-1">Завантаження файлу...</p>
+            </div>
+            <div class="w-full bg-slate-800 rounded-full h-2">
+                <div id="import-bar" class="bg-blue-500 h-2 rounded-full progress-bar" style="width: 0%"></div>
+            </div>
+            <p id="import-detail" class="text-xs text-slate-500"></p>
+        </div>
+    </div>
+
+    <!-- Edit Item Field Modal -->
+    <div id="edit-modal" class="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm hidden flex items-center justify-center p-4">
+        <div class="glass w-full max-w-md rounded-2xl p-6 border border-blue-500/30 shadow-2xl space-y-4">
+            <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+                <h3 class="text-base font-bold text-slate-100 flex items-center gap-2">
+                    <i class="fa-solid fa-pen-to-square text-blue-400"></i>
+                    <span id="edit-modal-title">Редагування поля</span>
+                </h3>
+                <button onclick="closeEditModal()" class="text-slate-400 hover:text-white p-1 rounded-lg">
+                    <i class="fa-solid fa-xmark text-lg"></i>
+                </button>
+            </div>
+            <div class="space-y-3 text-sm">
+                <div>
+                    <label class="block text-xs font-semibold text-slate-400 mb-1">Поточне значення:</label>
+                    <div id="edit-current-value" class="p-2.5 bg-slate-900/90 rounded-xl border border-slate-800 text-slate-300 font-mono text-xs break-all select-all min-h-[38px] flex items-center"></div>
+                </div>
+                <div>
+                    <label id="edit-field-label" class="block text-xs font-semibold text-slate-300 mb-1">Нове значення:</label>
+                    <input type="text" id="edit-new-value" class="w-full bg-slate-900 text-slate-100 p-2.5 rounded-xl border border-slate-700 focus:outline-none focus:border-blue-500 text-sm transition" placeholder="Введіть нове значення...">
+                    <!-- Тип документа обирається зі списку, а не вводиться текстом -->
+                    <select id="edit-doc-type" class="hidden w-full bg-slate-900 text-slate-100 p-2.5 rounded-xl border border-slate-700 focus:outline-none focus:border-blue-500 text-sm transition">
+                        <option value="НАКЛАДНА">НАКЛАДНА (прихід)</option>
+                        <option value="ВИМОГА">ВИМОГА (розхід)</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold text-slate-400 mb-1">Коментар / причина зміни (необов'язково):</label>
+                    <input type="text" id="edit-comment" class="w-full bg-slate-900 text-slate-100 p-2.5 rounded-xl border border-slate-700 focus:outline-none focus:border-blue-500 text-sm transition" placeholder="Наприклад: Виправлення помилки OCR">
+                </div>
+                <div id="edit-error" class="text-xs text-rose-400 hidden"></div>
+            </div>
+            <div class="flex items-center justify-end space-x-3 pt-2">
+                <button onclick="closeEditModal()" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-medium rounded-xl transition">
+                    Скасувати (Esc)
+                </button>
+                <button id="edit-save-btn" onclick="submitEditField()" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium rounded-xl transition shadow-lg shadow-blue-600/30 flex items-center gap-2">
+                    <i class="fa-solid fa-check"></i> <span>Зберегти</span>
+                </button>
+            </div>
+        </div>
+    </div>
+

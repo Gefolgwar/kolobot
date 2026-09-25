@@ -29,6 +29,11 @@ kolobot = "kolobot.main:main"
 [tool.setuptools.packages.find]
 include = ["kolobot*"]
 
+# Without this the installed wheel serves an empty page — and the tests, which
+# run from the repo root with pythonpath = ["."], would not notice.
+[tool.setuptools.package-data]
+"kolobot.web" = ["ui/*.html", "ui/*.css", "ui/js/*.js"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

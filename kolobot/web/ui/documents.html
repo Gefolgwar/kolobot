@@ -1,0 +1,51 @@
+    <!-- Documents Tab -->
+    <main id="panel-documents" class="max-w-7xl mx-auto px-6 hidden">
+        <div class="glass rounded-2xl p-4 mb-6">
+            <div class="flex items-center gap-2 flex-wrap">
+                <span class="text-xs text-slate-500 mr-0.5"><i class="fa-solid fa-filter"></i></span>
+                <button onclick="setDocFilter('not-accounted')" id="filter-not-accounted" class="px-2.5 py-1 text-xs font-medium rounded-lg border border-slate-700/60 text-slate-400 bg-slate-900/50 hover:bg-slate-800/80 transition flex items-center gap-1.5">
+                    <i class="fa-solid fa-triangle-exclamation text-amber-400"></i> Не в обліку
+                    <span id="filter-not-accounted-count" class="px-1.5 py-0.5 bg-slate-800 rounded text-[10px] min-w-[20px] text-center">0</span>
+                </button>
+            </div>
+        </div>
+        <!-- Підказка до таблиці: розгорнута за замовчуванням, згортається без JS.
+             Заголовок лишається на екрані й у згорнутому стані, тож блок читається як
+             пояснення, а не як ще один рядок таблиці. -->
+        <details class="glass rounded-2xl mb-6 doc-legend" open>
+            <summary class="px-4 py-3 flex items-center gap-2 cursor-pointer select-none text-xs text-slate-400 hover:text-slate-200 transition">
+                <i class="fa-solid fa-circle-info text-sky-400"></i>
+                <span class="font-semibold">Підказка: що означають позначки в таблиці</span>
+                <i class="fa-solid fa-chevron-down doc-legend-arrow ml-auto text-[10px] transition-transform"></i>
+            </summary>
+            <div id="doc-legend-body" class="px-4 pb-4 pt-1 text-xs border-t border-slate-800/60 divide-y divide-slate-800/40"></div>
+        </details>
+        <div class="glass rounded-2xl border border-slate-800 overflow-hidden shadow-2xl">
+            <div class="overflow-x-auto">
+                <table class="w-full text-left border-collapse compact-table card-table">
+                    <thead>
+                        <tr class="bg-slate-900/90 text-slate-400 text-xs font-semibold uppercase border-b border-slate-800">
+                            <th class="py-4 px-3 w-14"></th>
+                            <th class="py-4 px-3">Превʼю</th>
+                            <th id="doc-sort-filename" onclick="toggleDocSort('filename')" class="py-4 px-3 cursor-pointer select-none hover:text-slate-200 transition">Файл <i id="doc-sort-icon-filename" class="fa-solid fa-sort text-slate-600"></i></th>
+                            <th id="doc-sort-file_type" onclick="toggleDocSort('file_type')" class="py-4 px-3 cursor-pointer select-none hover:text-slate-200 transition">Тип <i id="doc-sort-icon-file_type" class="fa-solid fa-sort text-slate-600"></i></th>
+                            <th id="doc-sort-doc_type" onclick="toggleDocSort('doc_type')" class="py-4 px-3 cursor-pointer select-none hover:text-slate-200 transition">Тип документу <i id="doc-sort-icon-doc_type" class="fa-solid fa-sort text-slate-600"></i></th>
+                            <th id="doc-sort-status" onclick="toggleDocSort('status')" class="py-4 px-3 cursor-pointer select-none hover:text-slate-200 transition">Статус <i id="doc-sort-icon-status" class="fa-solid fa-sort text-slate-600"></i></th>
+                            <th id="doc-sort-uploaded_at" onclick="toggleDocSort('uploaded_at')" class="py-4 px-3 cursor-pointer select-none hover:text-slate-200 transition">Дата завантаження <i id="doc-sort-icon-uploaded_at" class="fa-solid fa-sort text-slate-600"></i></th>
+                            <th id="doc-sort-doc_number" onclick="toggleDocSort('doc_number')" class="py-4 px-3 cursor-pointer select-none hover:text-slate-200 transition">№ документа <i id="doc-sort-icon-doc_number" class="fa-solid fa-sort text-slate-600"></i></th>
+                            <th id="doc-sort-requested_by" onclick="toggleDocSort('requested_by')" class="py-4 px-3 cursor-pointer select-none hover:text-slate-200 transition">Затребував <i id="doc-sort-icon-requested_by" class="fa-solid fa-sort text-slate-600"></i></th>
+                            <th id="doc-sort-requested_via" onclick="toggleDocSort('requested_via')" class="py-4 px-3 cursor-pointer select-none hover:text-slate-200 transition">Через кого <i id="doc-sort-icon-requested_via" class="fa-solid fa-sort text-slate-600"></i></th>
+                            <th id="doc-sort-transaction_count" onclick="toggleDocSort('transaction_count')" class="py-4 px-3 cursor-pointer select-none hover:text-slate-200 transition">Позицій <i id="doc-sort-icon-transaction_count" class="fa-solid fa-sort text-slate-600"></i></th>
+                            <th class="py-4 px-3 text-right">Дії</th>
+                        </tr>
+                    </thead>
+                    <tbody id="docs-tbody" class="divide-y divide-slate-800/60 text-sm">
+                        <tr><td colspan="12" class="py-12 text-center text-slate-500">
+                            <p>Документів немає.</p>
+                        </td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </main>
+

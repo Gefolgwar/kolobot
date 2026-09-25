@@ -1,0 +1,110 @@
+        body { background-color: #0f172a; color: #f8fafc; }
+        .glass { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.08); }
+        .tab-active { border-bottom: 2px solid #3b82f6; color: #93c5fd; }
+        .tab-inactive { color: #64748b; }
+        .tab-inactive:hover { color: #94a3b8; }
+        .expand-row { background: rgba(15, 23, 42, 0.6); }
+        .badge-income { background: rgba(16,185,129,0.15); color: #34d399; }
+        .badge-expense { background: rgba(244,63,94,0.15); color: #fb7185; }
+        .badge-import { background: rgba(59,130,246,0.15); color: #60a5fa; }
+        .badge-nakladna { background: rgba(16,185,129,0.15); color: #34d399; }
+        .badge-vymoha { background: rgba(244,63,94,0.15); color: #fb7185; }
+        .badge-queued { background: rgba(245,158,11,0.15); color: #fbbf24; }
+        .badge-ocr { background: rgba(59,130,246,0.15); color: #60a5fa; }
+        .badge-emb { background: rgba(168,85,247,0.15); color: #c084fc; }
+        /* Дубль номера документа (#26): підсвічується клітинка «№ документа», не рядок.
+           Клас носить сама клітинка, тому з text-slate-300 він не змагається. */
+        .doc-dup { background: rgba(168,85,247,0.15); color: #d8b4fe; }
+        /* Блок підказок у вкладці «Документи» — нативний <details>: згортання робить браузер,
+           JS не потрібен. Системний трикутник <summary> прибираємо, бо стан показує власна
+           стрілка, а сам рядок-заголовок лишається видимим і в згорнутому вигляді. */
+        .doc-legend > summary { list-style: none; }
+        .doc-legend > summary::-webkit-details-marker { display: none; }
+        .doc-legend[open] .doc-legend-arrow { transform: rotate(180deg); }
+        .progress-bar { transition: width 0.3s ease; }
+        .cursor-blink { animation: blink 1s step-end infinite; }
+        @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+        .log-terminal { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+        /* Компактизація таблиць: Tailwind підключається з CDN і вставляє свої утиліти в <head>
+           пізніше за цей <style>, тому без !important правила програють класам px-3 / py-4.
+           Клітинки з colspan (порожній стан і розгорнуті деталі) не чіпаємо — у них свої відступи. */
+        .compact-table > thead > tr > th,
+        .compact-table > tbody > tr > td:not([colspan]) { padding: 8px !important; }
+        .compact-table > thead > tr > th { font-size: 10px !important; }
+        /* Картковий режим: нижче 1000px таблиця з класом-маркером .card-table стає картками.
+           Перемикання робить виключно CSS — у JS лишається один шаблон рядка, а підпис
+           клітинки береться з її атрибута data-label (текст дорівнює відповідному <th>).
+           Клітинки без data-label (шеврон і повноширинні блоки деталей) префікса не отримують.
+           Клас-маркер увімкнено явно, тому таблиці, ще не переведені на картки, не ламаються. */
+        @media (max-width: 999.98px) {
+            .card-table thead { display: none; }
+            .card-table,
+            .card-table > tbody { display: block; width: 100%; }
+            .card-table > tbody > tr:not(.hidden) {
+                display: block;
+                position: relative;
+                margin-bottom: 0.75rem;
+                padding: 0.75rem;
+                border: 1px solid rgba(30, 41, 59, 0.9);
+                border-radius: 0.75rem;
+                background: rgba(15, 23, 42, 0.45);
+            }
+            .card-table > tbody > tr > td,
+            .card-table > tbody > tr > td:not([colspan]) {
+                display: block;
+                width: auto;
+                padding: 2px 0 !important;
+                text-align: left !important;
+            }
+            .card-table > tbody > tr > td[colspan] { padding: 0 !important; }
+            .card-table > tbody > tr > td[data-label]::before {
+                content: attr(data-label) ": ";
+                font-size: 10px;
+                font-weight: 700;
+                text-transform: uppercase;
+                letter-spacing: 0.05em;
+                color: #94a3b8;
+            }
+            .card-table > tbody > tr > td:not([data-label])::before { content: none; }
+            /* Кнопки в картці мусять бути видимими без наведення миші */
+            .card-table > tbody > tr > td button { opacity: 1 !important; }
+            /* Внутрішні flex-контейнери клітинок притискаємо до лівого краю */
+            .card-table > tbody > tr > td > div.flex,
+            .card-table > tbody > tr > td > span.flex { justify-content: flex-start !important; }
+            /* Шеврон переїжджає у правий верхній кут картки: як окрема перша клітинка
+               він інакше стає порожнім рядком угорі, який не читається як керування. */
+            .card-table > tbody > tr:not(.hidden) > td:first-child:not([colspan]) {
+                position: absolute;
+                top: 0.75rem;
+                right: 0.75rem;
+                width: auto;
+                padding: 0 !important;
+            }
+            /* Числа й дати не розриваються посеред значення */
+            .card-table > tbody > tr > td[data-label="Дата завантаження"],
+            .card-table > tbody > tr > td[data-label="№ документа"],
+            .card-table > tbody > tr > td[data-label="Позицій"],
+            .card-table > tbody > tr > td[data-label="Прихід"],
+            .card-table > tbody > tr > td[data-label="Розхід"],
+            .card-table > tbody > tr > td[data-label="Залишок"],
+            .card-table > tbody > tr > td[data-label="Мін. залишок"] { white-space: nowrap; }
+            /* Підсвітка «нижче мінімуму»: рамка й тло картки специфічніші за утиліти Tailwind
+               з CDN, тому бордюр і тон позиції доводиться повертати явно за маркером row-low. */
+            .card-table > tbody > tr.row-low {
+                border-left: 4px solid #f43f5e !important;
+                background: rgba(76, 5, 25, 0.55) !important;
+            }
+            /* Вкладені таблиці (історія транзакцій і позиції документа) — теж картки, але
+               без шеврона: їхня перша клітинка є змістовною колонкою, тож правило правого
+               верхнього кута з #21 до них не застосовується. Селектор із двома .card-table
+               специфічніший за нього, тому скидання перемагає без !important на position. */
+            .card-table .card-table > tbody > tr:not(.hidden) > td:first-child:not([colspan]) {
+                position: static;
+                width: auto;
+                padding: 2px 0 !important;
+            }
+            /* Дати, кількості й номери накладних не рвуться посеред значення */
+            .card-table > tbody > tr > td[data-label="Дата"],
+            .card-table > tbody > tr > td[data-label="Кількість"],
+            .card-table > tbody > tr > td[data-label="№ накл."] { white-space: nowrap; }
+        }

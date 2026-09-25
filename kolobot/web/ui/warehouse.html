@@ -1,0 +1,66 @@
+    <!-- Warehouse Tab -->
+    <main id="panel-warehouse" class="max-w-7xl mx-auto px-6">
+        <div class="glass rounded-2xl p-4 mb-6 space-y-3">
+            <div class="flex flex-col sm:flex-row items-center justify-between gap-4">
+                <div class="relative w-full sm:w-96">
+                    <i class="fa-solid fa-magnifying-glass absolute left-3.5 top-3.5 text-slate-500"></i>
+                    <input type="text" id="search-items" onkeyup="filterItems()" placeholder="Пошук за назвою або номенклатурним номером..."
+                        class="w-full bg-slate-900/80 text-sm text-slate-200 pl-10 pr-4 py-2.5 rounded-xl border border-slate-700/60 focus:outline-none focus:border-blue-500 transition">
+                </div>
+                <div class="text-xs text-slate-400">
+                    Показано: <span id="visible-items" class="font-bold text-slate-200">0</span>
+                </div>
+            </div>
+            <div class="flex items-center gap-2 flex-wrap">
+                <span class="text-xs text-slate-500 mr-0.5"><i class="fa-solid fa-filter"></i></span>
+                <button onclick="setFilter('below-min')" id="filter-below-min" class="px-2.5 py-1 text-xs font-medium rounded-lg border border-slate-700/60 text-slate-400 bg-slate-900/50 hover:bg-slate-800/80 transition flex items-center gap-1.5">
+                    <i class="fa-solid fa-triangle-exclamation text-rose-400"></i> Менше мінімального залишку
+                    <span id="filter-below-min-count" class="px-1.5 py-0.5 bg-slate-800 rounded text-[10px] min-w-[20px] text-center">0</span>
+                </button>
+                <button onclick="setFilter('negative')" id="filter-negative" class="px-2.5 py-1 text-xs font-medium rounded-lg border border-slate-700/60 text-slate-400 bg-slate-900/50 hover:bg-slate-800/80 transition flex items-center gap-1.5">
+                    <i class="fa-solid fa-arrow-trend-down"></i> Від'ємний залишок
+                    <span id="filter-negative-count" class="px-1.5 py-0.5 bg-slate-800 rounded text-[10px] min-w-[20px] text-center">0</span>
+                </button>
+                <button onclick="setFilter('no-docs')" id="filter-no-docs" class="px-2.5 py-1 text-xs font-medium rounded-lg border border-slate-700/60 text-slate-400 bg-slate-900/50 hover:bg-slate-800/80 transition flex items-center gap-1.5">
+                    <i class="fa-solid fa-file-circle-xmark"></i> Без документу
+                    <span id="filter-no-docs-count" class="px-1.5 py-0.5 bg-slate-800 rounded text-[10px] min-w-[20px] text-center">0</span>
+                </button>
+                <button onclick="setFilter('dup-names')" id="filter-dup-names" class="px-2.5 py-1 text-xs font-medium rounded-lg border border-slate-700/60 text-slate-400 bg-slate-900/50 hover:bg-slate-800/80 transition flex items-center gap-1.5">
+                    <i class="fa-solid fa-clone"></i> Однакові назви
+                    <span id="filter-dup-names-count" class="px-1.5 py-0.5 bg-slate-800 rounded text-[10px] min-w-[20px] text-center">0</span>
+                </button>
+                <button onclick="setFilter('zeros')" id="filter-zeros" class="px-2.5 py-1 text-xs font-medium rounded-lg border border-slate-700/60 text-slate-400 bg-slate-900/50 hover:bg-slate-800/80 transition flex items-center gap-1.5">
+                    <i class="fa-solid fa-circle-dot"></i> Скрізь нулі
+                    <span id="filter-zeros-count" class="px-1.5 py-0.5 bg-slate-800 rounded text-[10px] min-w-[20px] text-center">0</span>
+                </button>
+            </div>
+        </div>
+
+        <div class="glass rounded-2xl border border-slate-800 overflow-hidden shadow-2xl">
+            <div class="overflow-x-auto">
+                <table class="w-full text-left border-collapse compact-table card-table">
+                    <thead>
+                        <tr class="bg-slate-900/90 text-slate-400 text-xs font-semibold uppercase border-b border-slate-800">
+                            <th class="py-4 px-3 w-8"></th>
+                            <th class="py-4 px-3">Ном. номер</th>
+                            <th class="py-4 px-3">Найменування</th>
+                            <th class="py-4 px-3">Прихід</th>
+                            <th class="py-4 px-3">Розхід</th>
+                            <th class="py-4 px-3">Залишок</th>
+                            <th class="py-4 px-3">Мін. залишок</th>
+                            <th class="py-4 px-3">Од.виміру</th>
+                            <th class="py-4 px-3">Постачальник</th>
+                            <th class="py-4 px-3">Примітки</th>
+                        </tr>
+                    </thead>
+                    <tbody id="items-tbody" class="divide-y divide-slate-800/60 text-sm">
+                        <tr><td colspan="10" class="py-12 text-center text-slate-500">
+                            <i class="fa-solid fa-boxes-stacked text-2xl mb-2 text-slate-600"></i>
+                            <p>Склад порожній. Завантажте Excel файл для початку роботи.</p>
+                        </td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </main>
+
