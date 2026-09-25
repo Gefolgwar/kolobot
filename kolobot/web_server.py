@@ -115,6 +115,19 @@ HTML_PAGE = r"""<!DOCTYPE html>
                 border-left: 4px solid #f43f5e !important;
                 background: rgba(76, 5, 25, 0.55) !important;
             }
+            /* Вкладені таблиці (історія транзакцій і позиції документа) — теж картки, але
+               без шеврона: їхня перша клітинка є змістовною колонкою, тож правило правого
+               верхнього кута з #21 до них не застосовується. Селектор із двома .card-table
+               специфічніший за нього, тому скидання перемагає без !important на position. */
+            .card-table .card-table > tbody > tr:not(.hidden) > td:first-child:not([colspan]) {
+                position: static;
+                width: auto;
+                padding: 2px 0 !important;
+            }
+            /* Дати, кількості й номери накладних не рвуться посеред значення */
+            .card-table > tbody > tr > td[data-label="Дата"],
+            .card-table > tbody > tr > td[data-label="Кількість"],
+            .card-table > tbody > tr > td[data-label="№ накл."] { white-space: nowrap; }
         }
     </style>
 </head>
@@ -837,7 +850,7 @@ async function reloadTransactions(itemId) {
             content.innerHTML = headerBar + '<p class="text-slate-500 py-2">Немає транзакцій.</p>';
             return;
         }
-        let h = headerBar + '<table class="w-full"><thead><tr class="text-slate-500 text-[11px] uppercase">' +
+        let h = headerBar + '<table class="w-full card-table"><thead><tr class="text-slate-500 text-[11px] uppercase">' +
             '<th class="py-1 pr-3 text-left">Дата</th><th class="py-1 pr-3 text-left">Тип</th>' +
             '<th class="py-1 pr-3 text-left">Тип док.</th>' +
             '<th class="py-1 pr-3 text-right">Кількість</th><th class="py-1 pr-3 text-left">№ накл.</th>' +
@@ -889,16 +902,16 @@ async function reloadTransactions(itemId) {
                 </button>`;
             }
             h += `<tr class="border-t border-slate-800/30">
-                <td class="py-2 pr-3 text-slate-300">${esc(date)}</td>
-                <td class="py-2 pr-3"><span class="px-2 py-0.5 rounded-full text-[11px] font-medium ${badge}" ${isManual ? 'style="background: rgba(245, 158, 11, 0.15); color: #fbbf24;"' : ''}>${label}</span></td>
-                <td class="py-2 pr-3">${docTypeBadge}</td>
-                <td class="py-2 pr-3 text-right font-medium">${qtyDisplay}</td>
-                <td class="py-2 pr-3 text-slate-300 font-mono">${esc(tx.doc_number)}</td>
-                <td class="py-2 pr-3 text-right text-blue-400 font-medium">${fmtNum(tx.running_balance)}</td>
-                <td class="py-2 pr-3 break-words">${docDisplay}</td>
-                <td class="py-2 pr-3 text-slate-300 break-words">${fmtRequestedBy(requestedBy)}</td>
-                <td class="py-2 pr-3 text-slate-300 break-words">${fmtRequestedBy(requestedVia)}</td>
-                <td class="py-2 pr-3 text-slate-500 text-[11px] break-words">${esc(srcRow)}</td>
+                <td class="py-2 pr-3 text-slate-300" data-label="Дата">${esc(date)}</td>
+                <td class="py-2 pr-3" data-label="Тип"><span class="px-2 py-0.5 rounded-full text-[11px] font-medium ${badge}" ${isManual ? 'style="background: rgba(245, 158, 11, 0.15); color: #fbbf24;"' : ''}>${label}</span></td>
+                <td class="py-2 pr-3" data-label="Тип док.">${docTypeBadge}</td>
+                <td class="py-2 pr-3 text-right font-medium" data-label="Кількість">${qtyDisplay}</td>
+                <td class="py-2 pr-3 text-slate-300 font-mono" data-label="№ накл.">${esc(tx.doc_number)}</td>
+                <td class="py-2 pr-3 text-right text-blue-400 font-medium" data-label="Залишок">${fmtNum(tx.running_balance)}</td>
+                <td class="py-2 pr-3 break-words" data-label="Документ">${docDisplay}</td>
+                <td class="py-2 pr-3 text-slate-300 break-words" data-label="Затребував">${fmtRequestedBy(requestedBy)}</td>
+                <td class="py-2 pr-3 text-slate-300 break-words" data-label="Через кого">${fmtRequestedBy(requestedVia)}</td>
+                <td class="py-2 pr-3 text-slate-500 text-[11px] break-words" data-label="Джерело">${esc(srcRow)}</td>
             </tr>`;
         });
         h += '</tbody></table>';
@@ -1267,14 +1280,14 @@ async function reloadDocImpact(docId) {
             if (impacts.length > 0) {
                 h += '<div class="glass rounded-xl p-3 border border-slate-800 bg-slate-900/60">';
                 h += '<div class="text-xs font-semibold text-slate-400 mb-2 flex items-center justify-between"><span>Позиції в документі (' + impacts.length + ')</span></div>';
-                h += '<div class="overflow-x-auto"><table class="w-full text-xs"><thead><tr class="text-slate-500 text-[11px] uppercase"><th class="py-1 pr-3 text-left">Ном. номер</th><th class="py-1 pr-3 text-left">Найменування</th><th class="py-1 pr-3 text-left">Тип</th><th class="py-1 pr-3 text-right">Кількість</th><th class="py-1 pr-3 text-left">Од.</th><th class="py-1 pr-3 text-left">Джерело</th></tr></thead><tbody>';
+                h += '<div class="overflow-x-auto"><table class="w-full text-xs card-table"><thead><tr class="text-slate-500 text-[11px] uppercase"><th class="py-1 pr-3 text-left">Ном. номер</th><th class="py-1 pr-3 text-left">Найменування</th><th class="py-1 pr-3 text-left">Тип</th><th class="py-1 pr-3 text-right">Кількість</th><th class="py-1 pr-3 text-left">Од.</th><th class="py-1 pr-3 text-left">Джерело</th></tr></thead><tbody>';
                 impacts.forEach(imp => {
                     const isInc = imp.operation_type === 'income';
                     const badge = isInc ? 'badge-income' : 'badge-expense';
                     const label = isInc ? 'Прихід' : 'Розхід';
                     const qi = fmtImpactQty(imp.quantity, isInc);
                     h += `<tr class="border-t border-slate-800/30 hover:bg-slate-800/30 transition group">
-                        <td class="py-1.5 pr-3 font-mono text-slate-400">
+                        <td class="py-1.5 pr-3 font-mono text-slate-400" data-label="Ном. номер">
                             <div class="flex items-center justify-between gap-1">
                                 <span>${esc(imp.sku)}</span>
                                 <button onclick="event.stopPropagation(); openEditModal(${imp.item_id}, 'sku', '${esc(imp.sku)}', 'Номенклатурний номер (SKU)')" class="text-slate-500 hover:text-blue-400 p-0.5 rounded transition opacity-0 hover:opacity-100 group-hover:opacity-100" title="Редагувати номенклатурний номер">
@@ -1282,7 +1295,7 @@ async function reloadDocImpact(docId) {
                                 </button>
                             </div>
                         </td>
-                        <td class="py-1.5 pr-3 text-slate-200">
+                        <td class="py-1.5 pr-3 text-slate-200" data-label="Найменування">
                             <div class="flex items-center justify-between gap-1">
                                 <span class="min-w-0 break-words">${esc(imp.name)}</span>
                                 <button onclick="event.stopPropagation(); openEditModal(${imp.item_id}, 'name', '${esc(imp.name)}', 'Найменування')" class="text-slate-500 hover:text-blue-400 p-0.5 rounded transition opacity-0 hover:opacity-100 group-hover:opacity-100 shrink-0" title="Редагувати найменування">
@@ -1290,8 +1303,8 @@ async function reloadDocImpact(docId) {
                                 </button>
                             </div>
                         </td>
-                        <td class="py-1.5 pr-3"><span class="px-2 py-0.5 rounded-full text-[10px] font-medium ${badge}">${label}</span></td>
-                        <td class="py-1.5 pr-3 text-right font-medium ${qi[1]}">
+                        <td class="py-1.5 pr-3" data-label="Тип"><span class="px-2 py-0.5 rounded-full text-[10px] font-medium ${badge}">${label}</span></td>
+                        <td class="py-1.5 pr-3 text-right font-medium ${qi[1]}" data-label="Кількість">
                             <div class="flex items-center justify-end gap-1">
                                 <span>${qi[0]}</span>
                                 <button onclick="event.stopPropagation(); openEditModal(${imp.item_id}, 'balance', '${imp.quantity}', 'Залишок (кількість)')" class="text-slate-500 hover:text-blue-400 p-0.5 rounded transition opacity-0 hover:opacity-100 group-hover:opacity-100" title="Коригувати кількість/залишок">
@@ -1299,7 +1312,7 @@ async function reloadDocImpact(docId) {
                                 </button>
                             </div>
                         </td>
-                        <td class="py-1.5 pr-3 text-slate-400">
+                        <td class="py-1.5 pr-3 text-slate-400" data-label="Од.">
                             <div class="flex items-center justify-between gap-1">
                                 <span>${esc(imp.unit)}</span>
                                 <button onclick="event.stopPropagation(); openEditModal(${imp.item_id}, 'unit', '${esc(imp.unit)}', 'Одиниця виміру')" class="text-slate-500 hover:text-blue-400 p-0.5 rounded transition opacity-0 hover:opacity-100 group-hover:opacity-100" title="Редагувати одиницю виміру">
@@ -1307,7 +1320,7 @@ async function reloadDocImpact(docId) {
                                 </button>
                             </div>
                         </td>
-                        <td class="py-1.5 pr-3 text-slate-500 text-[11px] break-words">${esc(imp.source_row || '')}</td>
+                        <td class="py-1.5 pr-3 text-slate-500 text-[11px] break-words" data-label="Джерело">${esc(imp.source_row || '')}</td>
                     </tr>`;
                 });
                 h += '</tbody></table></div></div>';
@@ -1319,7 +1332,7 @@ async function reloadDocImpact(docId) {
             if (impacts.length === 0) {
                 h += '<p class="text-slate-500 py-2">Документ не вплинув на жодну позицію.</p>';
             } else {
-                h += '<table class="w-full text-xs"><thead><tr class="text-slate-500 text-[11px] uppercase">' +
+                h += '<table class="w-full text-xs card-table"><thead><tr class="text-slate-500 text-[11px] uppercase">' +
                     '<th class="py-1 pr-3 text-left">Ном. номер</th><th class="py-1 pr-3 text-left">Найменування</th>' +
                     '<th class="py-1 pr-3 text-left">Тип</th><th class="py-1 pr-3 text-right">Кількість</th>' +
                     '<th class="py-1 pr-3 text-left">Од.</th><th class="py-1 pr-3 text-left">Джерело</th>' +
@@ -1331,7 +1344,7 @@ async function reloadDocImpact(docId) {
                     const qi = fmtImpactQty(imp.quantity, isInc);
                     const srcRow = imp.source_row || '';
                     h += `<tr class="border-t border-slate-800/30 hover:bg-slate-800/30 transition group">
-                        <td class="py-2 pr-3 font-mono text-slate-400">
+                        <td class="py-2 pr-3 font-mono text-slate-400" data-label="Ном. номер">
                             <div class="flex items-center justify-between gap-1">
                                 <span>${esc(imp.sku)}</span>
                                 <button onclick="event.stopPropagation(); openEditModal(${imp.item_id}, 'sku', '${esc(imp.sku)}', 'Номенклатурний номер (SKU)')" class="text-slate-500 hover:text-blue-400 p-0.5 rounded transition opacity-0 hover:opacity-100 group-hover:opacity-100" title="Редагувати номенклатурний номер">
@@ -1339,7 +1352,7 @@ async function reloadDocImpact(docId) {
                                 </button>
                             </div>
                         </td>
-                        <td class="py-2 pr-3 text-slate-200">
+                        <td class="py-2 pr-3 text-slate-200" data-label="Найменування">
                             <div class="flex items-center justify-between gap-1">
                                 <span class="min-w-0 break-words">${esc(imp.name)}</span>
                                 <button onclick="event.stopPropagation(); openEditModal(${imp.item_id}, 'name', '${esc(imp.name)}', 'Найменування')" class="text-slate-500 hover:text-blue-400 p-0.5 rounded transition opacity-0 hover:opacity-100 group-hover:opacity-100 shrink-0" title="Редагувати найменування">
@@ -1347,8 +1360,8 @@ async function reloadDocImpact(docId) {
                                 </button>
                             </div>
                         </td>
-                        <td class="py-2 pr-3"><span class="px-2 py-0.5 rounded-full text-[11px] font-medium ${badge}">${label}</span></td>
-                        <td class="py-2 pr-3 text-right font-medium ${qi[1]}">
+                        <td class="py-2 pr-3" data-label="Тип"><span class="px-2 py-0.5 rounded-full text-[11px] font-medium ${badge}">${label}</span></td>
+                        <td class="py-2 pr-3 text-right font-medium ${qi[1]}" data-label="Кількість">
                             <div class="flex items-center justify-end gap-1">
                                 <span>${qi[0]}</span>
                                 <button onclick="event.stopPropagation(); openEditModal(${imp.item_id}, 'balance', '${imp.quantity}', 'Залишок (кількість)')" class="text-slate-500 hover:text-blue-400 p-0.5 rounded transition opacity-0 hover:opacity-100 group-hover:opacity-100" title="Коригувати кількість/залишок">
@@ -1356,7 +1369,7 @@ async function reloadDocImpact(docId) {
                                 </button>
                             </div>
                         </td>
-                        <td class="py-2 pr-3 text-slate-400">
+                        <td class="py-2 pr-3 text-slate-400" data-label="Од.">
                             <div class="flex items-center justify-between gap-1">
                                 <span>${esc(imp.unit)}</span>
                                 <button onclick="event.stopPropagation(); openEditModal(${imp.item_id}, 'unit', '${esc(imp.unit)}', 'Одиниця виміру')" class="text-slate-500 hover:text-blue-400 p-0.5 rounded transition opacity-0 hover:opacity-100 group-hover:opacity-100" title="Редагувати одиницю виміру">
@@ -1364,7 +1377,7 @@ async function reloadDocImpact(docId) {
                                 </button>
                             </div>
                         </td>
-                        <td class="py-2 pr-3 text-slate-500 text-[11px] break-words">${esc(srcRow)}</td>
+                        <td class="py-2 pr-3 text-slate-500 text-[11px] break-words" data-label="Джерело">${esc(srcRow)}</td>
                     </tr>`;
                 });
                 h += '</tbody></table>';

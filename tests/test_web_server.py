@@ -1230,7 +1230,10 @@ async def test_documents_table_has_card_mode_markup(warehouse_env):
                       "Дата завантаження", "№ документа", "Затребував",
                       "Через кого", "Позицій", "Дії"):
             assert f'data-label="{label}"' in html, label
-        assert html.count(' data-label="') == 20  # 11 у «Документах» + 9 у «Складі», лише атрибути <td>
+        # рахунок обмежено тілом renderDocs, щоб підписи інших таблиць і CSS-селектори
+        # з data-label="…" не впливали на число
+        render_docs = html.split("function renderDocs(docs)")[1].split("tbody.innerHTML = html;")[0]
+        assert render_docs.count(' data-label="') == 11
 
         # шеврон і повноширинні клітинки розгорнутих блоків підпису не отримують
         assert '<td class="py-4 px-3"><i id="doc-chevron-' in html
@@ -1272,6 +1275,11 @@ async def test_warehouse_table_has_card_mode_markup(warehouse_env):
         assert '<td class="py-4 px-3"><i id="chevron-' in html
         assert '<td colspan="10" class="p-0">' in html
 
+        # рахунок обмежено тілом renderItems: CSS-селектори з data-label="…" і підписи
+        # вкладених таблиць не мають впливати на число
+        render_items = html.split("function renderItems(items)")[1].split("tbody.innerHTML = html;")[0]
+        assert render_items.count(' data-label="') == 9
+
         # олівці редагування: у картці вони opacity-1 без наведення, а justify-content
         # flex-start перебиває утиліту justify-between, тож олівець стоїть біля значення
         assert ".card-table > tbody > tr > td button { opacity: 1 !important; }" in html
@@ -1285,6 +1293,48 @@ async def test_warehouse_table_has_card_mode_markup(warehouse_env):
 
         # числові колонки складу не рвуться посеред значення
         for label in ("Прихід", "Розхід", "Залишок", "Мін. залишок"):
+            assert f'.card-table > tbody > tr > td[data-label="{label}"]' in html, label
+    finally:
+        await client.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_nested_tables_have_card_mode_markup(warehouse_env):
+    """Слайс #23: історія транзакцій і позиції документа теж стають картками."""
+    db, fs, vs = warehouse_env
+    server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
+    client = TestClient(TestServer(server._app))
+    await client.start_server()
+
+    try:
+        html = await (await client.get("/")).text()
+
+        # історія транзакцій: 10 підписів усередині самої таблиці
+        tx_table = html.split('<table class="w-full card-table">')[1].split("</table>")[0]
+        for label in ("Дата", "Тип", "Тип док.", "Кількість", "№ накл.",
+                      "Залишок", "Документ", "Затребував", "Через кого", "Джерело"):
+            assert f'data-label="{label}"' in tx_table, label
+        assert tx_table.count(' data-label="') == 10
+
+        # позиції документа: два окремі рендери — для фото й для Excel —
+        # з однаковим набором із 6 колонок в обох
+        item_tables = html.split('<table class="w-full text-xs card-table">')[1:]
+        assert len(item_tables) == 2
+        for body in (chunk.split("</table>")[0] for chunk in item_tables):
+            for label in ("Ном. номер", "Найменування", "Тип", "Кількість", "Од.", "Джерело"):
+                assert f'data-label="{label}"' in body, label
+            assert body.count(' data-label="') == 6
+
+        # перша клітинка вкладеної таблиці — змістовна колонка, а не шеврон,
+        # тож правило правого верхнього кута з #21 для неї скасовується
+        assert ".card-table .card-table > tbody > tr:not(.hidden) > td:first-child:not([colspan])" in html
+
+        # порожній стан не став таблицею — це звичайний абзац, який картковий режим не чіпає
+        assert '\'<p class="text-slate-500 py-2">Немає транзакцій.</p>\'' in html
+
+        # дати, кількості й номери накладних не рвуться посеред значення
+        for label in ("Дата", "Кількість", "№ накл."):
             assert f'.card-table > tbody > tr > td[data-label="{label}"]' in html, label
     finally:
         await client.close()
