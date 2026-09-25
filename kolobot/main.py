@@ -28,7 +28,7 @@ from kolobot.handlers.media import MediaHandler, _ext_from_mime
 from kolobot.intake_service import DocumentIntakeService
 from kolobot.key_pool import KeyPool, PoolKind
 from kolobot.log_service import setup_logging_capture
-from kolobot.messages import ACCESS_DENIED_UK
+from kolobot.messages import ACCESS_DENIED_UK, unaccounted_notice_uk
 from kolobot.middlewares.access import AccessMiddleware
 from kolobot.queue_service import DocumentQueueService, PendingCard, QueueItem
 from kolobot.rag_service import RagService
@@ -448,9 +448,14 @@ def _save_to_warehouse(
         parts.append(f"{updated} оновлено")
     if txs:
         parts.append(f"{txs} транзакцій")
-    if parts:
-        return "📦 Склад: " + ", ".join(parts) + "."
-    return ""
+    summary = "📦 Склад: " + ", ".join(parts) + "." if parts else ""
+
+    # Документ із нерозпізнаними обовʼязковими полями в облік не йде. Читаємо записаний
+    # рядок, щоб повідомлення й таблиця документів не розходились у тому, що вважати повним.
+    saved_doc = wdb.get_document(wh_doc_id)
+    notice = unaccounted_notice_uk(saved_doc) if saved_doc else ""
+
+    return "\n\n".join(block for block in (summary, notice) if block)
 
 
 def build_app():

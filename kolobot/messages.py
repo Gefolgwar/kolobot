@@ -1,5 +1,9 @@
 """Ukrainian user-facing copy for Phase 1."""
 
+from typing import Any, Dict
+
+from kolobot.warehouse_db import missing_doc_fields
+
 ACCESS_DENIED_UK = (
     "Вибачте, цей бот особистий і доступний лише власнику. "
     "Якщо ви потрапили сюди випадково — просто ігноруйте це повідомлення."
@@ -22,3 +26,16 @@ HELP_UK = (
     "• /clear — скасування поточних завдань та очищення черги.\n"
     "• /start — перевірка доступу."
 )
+
+UNACCOUNTED_NOTICE_UK = (
+    "⚠️ Не в обліку — не розпізнано: {fields}.\n"
+    "Документ не враховано в залишках, доки ці поля не дозаповнено."
+)
+
+
+def unaccounted_notice_uk(doc: Dict[str, Any]) -> str:
+    """Блок «документ не в обліку» для нерозпізнаних обовʼязкових полів; інакше — порожньо."""
+    missing = missing_doc_fields(doc)
+    if not missing:
+        return ""
+    return UNACCOUNTED_NOTICE_UK.format(fields=", ".join(missing))
