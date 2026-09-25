@@ -46,6 +46,12 @@ HTML_PAGE = r"""<!DOCTYPE html>
         .cursor-blink { animation: blink 1s step-end infinite; }
         @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
         .log-terminal { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+        /* Компактизація таблиць: Tailwind підключається з CDN і вставляє свої утиліти в <head>
+           пізніше за цей <style>, тому без !important правила програють класам px-3 / py-4.
+           Клітинки з colspan (порожній стан і розгорнуті деталі) не чіпаємо — у них свої відступи. */
+        .compact-table > thead > tr > th,
+        .compact-table > tbody > tr > td:not([colspan]) { padding: 8px !important; }
+        .compact-table > thead > tr > th { font-size: 10px !important; }
     </style>
 </head>
 <body class="min-h-screen font-sans pb-12">
@@ -134,9 +140,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
         <div class="glass rounded-2xl border border-slate-800 overflow-hidden shadow-2xl">
             <div class="overflow-x-auto">
-                <table class="w-full text-left border-collapse">
+                <table class="w-full text-left border-collapse compact-table">
                     <thead>
-                        <tr class="bg-slate-900/90 text-slate-400 text-xs font-semibold uppercase tracking-wider border-b border-slate-800">
+                        <tr class="bg-slate-900/90 text-slate-400 text-xs font-semibold uppercase border-b border-slate-800">
                             <th class="py-4 px-3 w-8"></th>
                             <th class="py-4 px-3">Ном. номер</th>
                             <th class="py-4 px-3">Найменування</th>
@@ -164,9 +170,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <main id="panel-documents" class="max-w-7xl mx-auto px-6 hidden">
         <div class="glass rounded-2xl border border-slate-800 overflow-hidden shadow-2xl">
             <div class="overflow-x-auto">
-                <table class="w-full text-left border-collapse">
+                <table class="w-full text-left border-collapse compact-table">
                     <thead>
-                        <tr class="bg-slate-900/90 text-slate-400 text-xs font-semibold uppercase tracking-wider border-b border-slate-800">
+                        <tr class="bg-slate-900/90 text-slate-400 text-xs font-semibold uppercase border-b border-slate-800">
                             <th class="py-4 px-3 w-8"></th>
                             <th class="py-4 px-3">Превʼю</th>
                             <th class="py-4 px-3">Файл</th>
