@@ -81,3 +81,17 @@ def test_gc_tmp_cleans_only_tmp_not_finals(store: FileStore, tmp_path: Path):
     assert not os.path.exists(t1)
     assert not os.path.exists(t2)
     assert os.path.isfile(final)
+
+
+def test_gc_tmp_on_boot_clears_only_tmp(tmp_path):
+    from kolobot.file_store import FileStore
+    fs = FileStore(downloads_path=str(tmp_path))
+    # Create tmp and final files
+    tmp_file = fs.save_tmp(b"tmp-data", ext=".jpg")
+    final = tmp_path / "keep.jpg"
+    final.write_bytes(b"final-data")
+
+    fs.gc_tmp()
+
+    assert not os.path.exists(tmp_file)
+    assert os.path.isfile(str(final))
