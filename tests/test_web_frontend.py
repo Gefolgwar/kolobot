@@ -1,9 +1,7 @@
-"""The frontend assets in files: the page, its script block, and the migration gate."""
+"""The frontend assets in files: the page, its script block, and the JS it carries."""
 
 from __future__ import annotations
 
-import ast
-import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -15,7 +13,6 @@ from kolobot.warehouse_db import WarehouseDB
 from kolobot.web.assets import JS, PAGE
 from kolobot.web_server import WebServer
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
 UI_DIR = Path(web_package.__file__).resolve().parent / "ui"
 
 
@@ -41,63 +38,6 @@ def _script_block(page: str) -> str:
     occurs once — on the block's opening line.
     """
     return page.split("<script>\n", 1)[1].split("</script>", 1)[0]
-
-
-def _pre_refactor_literal():
-    """``HTML_PAGE`` as it stands in ``git show HEAD:kolobot/web_server.py``."""
-    source = subprocess.run(
-        ["git", "show", "HEAD:kolobot/web_server.py"],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        check=True,
-    ).stdout
-    for node in ast.parse(source).body:
-        if isinstance(node, ast.Assign) and any(
-            getattr(target, "id", None) == "HTML_PAGE" for target in node.targets
-        ):
-            return node.value.value
-    return None
-
-
-def test_page_matches_pre_refactor_html():
-    """Migration gate: the page is the literal it replaced, character for character.
-
-    Deleted with the other ``git show HEAD:`` tests once the series lands; until
-    then it is the one check that the cut was verbatim.
-    """
-    literal = _pre_refactor_literal()
-    if literal is None:
-        pytest.skip("HEAD carries no HTML_PAGE literal: the extraction has landed")
-    assert PAGE == literal.replace("\r\n", "\n")
-
-
-def _pre_split_script():
-    """``ui/js/page.js`` as it stands in ``git show HEAD``, or ``None`` once the
-    split has landed and HEAD serves the 17 modules in its place."""
-    done = subprocess.run(
-        ["git", "show", "HEAD:kolobot/web/ui/js/page.js"],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-    )
-    if done.returncode != 0:
-        return None
-    return done.stdout.replace("\r\n", "\n")
-
-
-def test_page_unchanged_by_the_js_split():
-    """Migration gate: the 17 modules join back into the script they were cut from.
-
-    Deleted with the other ``git show HEAD:`` tests once the series lands; until
-    then it is the one check that the cut was verbatim.
-    """
-    page_js = _pre_split_script()
-    if page_js is None:
-        pytest.skip("HEAD carries no ui/js/page.js: the split has landed")
-    assert _script_block(PAGE) == page_js
 
 
 def test_script_tag_content_equals_frontend_js():

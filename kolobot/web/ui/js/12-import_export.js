@@ -1,6 +1,4 @@
 
-// ---- Import / Export ----
-
 async function importExcel(input) {
     const file = input.files[0];
     if (!file) return;

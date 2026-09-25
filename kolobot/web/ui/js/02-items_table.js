@@ -1,6 +1,4 @@
 
-// ---- Warehouse Items ----
-
 async function fetchItems() {
     try {
         const res = await fetch('/api/warehouse/items');
@@ -109,8 +107,6 @@ function renderItems(items) {
     });
     tbody.innerHTML = html;
 }
-
-// ---- Item Edit Modal Logic ----
 
 let currentEditItemId = null;
 let currentEditField = null;

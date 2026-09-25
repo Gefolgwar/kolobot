@@ -1,6 +1,4 @@
 
-// ---- Delete ----
-
 let pendingDeleteId = null;
 function openDeleteModal(docId, filename) {
     pendingDeleteId = docId;
@@ -20,8 +18,6 @@ async function executeDelete(docId) {
         await refreshAll();
     } catch(e) { alert('Не вдалося видалити: ' + e.message); }
 }
-
-// ---- Helpers ----
 
 function esc(s) {
     return String(s || '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));

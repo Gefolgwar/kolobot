@@ -1,6 +1,4 @@
 
-// ---- Document viewing ----
-
 let imgZoom = 1.0;
 const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 3.0;

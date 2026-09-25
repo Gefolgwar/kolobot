@@ -1,6 +1,4 @@
 
-// ---- Log Console Logic ----
-
 let allLogs = [];
 let lastLogId = 0;
 let autoScroll = true;

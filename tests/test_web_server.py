@@ -15,7 +15,7 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 from kolobot.warehouse_db import REQUIRED_DOC_FIELDS, WarehouseDB
-from kolobot.web_server import WebServer
+from kolobot.web_server import JS, PAGE, WebServer
 
 
 @pytest.fixture
@@ -150,22 +150,11 @@ async def test_api_delete_document(warehouse_env):
         db.close()
 
 
-@pytest.mark.asyncio
-async def test_documents_panel_renders_queued_status_column(warehouse_env):
-    db, fs, vs = warehouse_env
-    server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
-    client = TestClient(TestServer(server.app))
-    await client.start_server()
-
-    try:
-        resp = await client.get("/")
-        html = await resp.text()
-        assert ">Статус <i" in html  # #25: у заголовку колонки тепер ще й індикатор сортування
-        assert "⏳ В черзі" in html
-        assert "Документ у черзі на розпізнавання" in html
-    finally:
-        await client.close()
-        db.close()
+def test_documents_panel_renders_queued_status_column():
+    html = PAGE
+    assert ">Статус <i" in html  # #25: у заголовку колонки тепер ще й індикатор сортування
+    assert "⏳ В черзі" in html
+    assert "Документ у черзі на розпізнавання" in html
 
 
 @pytest.mark.asyncio
@@ -1134,220 +1123,160 @@ async def test_api_documents_and_transactions_expose_requested_by(warehouse_env)
         db.close()
 
 
-@pytest.mark.asyncio
-async def test_documents_table_has_requested_by_column(warehouse_env):
+def test_documents_table_has_requested_by_column():
     """"Документи" мають однойменну колонку, "Склад" — колонку в таблиці транзакцій."""
-    db, fs, vs = warehouse_env
-    server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
-    client = TestClient(TestServer(server.app))
-    await client.start_server()
-
-    try:
-        html = await (await client.get("/")).text()
-        docs_head = html.split('id="docs-tbody"')[0]
-        assert docs_head.count("Затребував") == 1
-        assert docs_head.count("Через кого") == 1
-        assert "tx.requested_by" in html
-        assert "tx.requested_via" in html
-    finally:
-        await client.close()
-        db.close()
+    html = PAGE
+    docs_head = html.split('id="docs-tbody"')[0]
+    assert docs_head.count("Затребував") == 1
+    assert docs_head.count("Через кого") == 1
+    assert "tx.requested_by" in html
+    assert "tx.requested_via" in html
 
 
-@pytest.mark.asyncio
-async def test_table_fields_wrap_instead_of_truncating(warehouse_env):
+def test_table_fields_wrap_instead_of_truncating():
     """Табличні поля переносяться рядками, а не обрізаються трикрапкою."""
-    db, fs, vs = warehouse_env
-    server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
-    client = TestClient(TestServer(server.app))
-    await client.start_server()
+    html = PAGE
+    # "data.truncated" — прапорець обрізання OCR-тексту в API, не CSS-клас
+    markup = html.replace("data.truncated", "")
 
-    try:
-        html = await (await client.get("/")).text()
-        # "data.truncated" — прапорець обрізання OCR-тексту в API, не CSS-клас
-        markup = html.replace("data.truncated", "")
+    assert "truncate" not in markup
+    for legacy_width in ("max-w-[105px]", "max-w-[160px]", "max-w-[170px]",
+                         "max-w-[180px]", "max-w-[200px]", "max-w-[250px]"):
+        assert legacy_width not in markup
 
-        assert "truncate" not in markup
-        for legacy_width in ("max-w-[105px]", "max-w-[160px]", "max-w-[170px]",
-                             "max-w-[180px]", "max-w-[200px]", "max-w-[250px]"):
-            assert legacy_width not in markup
+    # перенос рядків у клітинках дозволено
+    assert markup.count("break-words") >= 10
 
-        # перенос рядків у клітинках дозволено
-        assert markup.count("break-words") >= 10
+    # title-підказки, що лише компенсували обрізання, прибрані
+    assert 'title="${esc(requestedBy)}"' not in html
+    assert 'title="${esc(requestedVia)}"' not in html
+    assert 'title="${esc(it.notes)}"' not in html
+    assert 'title="${esc(imp.name)}"' not in html
+    assert 'title="${esc(srcRow)}"' not in html
+    assert 'title="${esc(tx.filename)}"' not in html
 
-        # title-підказки, що лише компенсували обрізання, прибрані
-        assert 'title="${esc(requestedBy)}"' not in html
-        assert 'title="${esc(requestedVia)}"' not in html
-        assert 'title="${esc(it.notes)}"' not in html
-        assert 'title="${esc(imp.name)}"' not in html
-        assert 'title="${esc(srcRow)}"' not in html
-        assert 'title="${esc(tx.filename)}"' not in html
-
-        # підказка з текстом помилки на бейджі статусу лишається
-        assert 'title="${esc(doc.error_message)}"' in html
-    finally:
-        await client.close()
-        db.close()
+    # підказка з текстом помилки на бейджі статусу лишається
+    assert 'title="${esc(doc.error_message)}"' in html
 
 
-@pytest.mark.asyncio
-async def test_tables_use_compact_cells(warehouse_env):
+def test_tables_use_compact_cells():
     """Обидві таблиці компактизовано, а правила мають !important."""
-    db, fs, vs = warehouse_env
-    server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
-    client = TestClient(TestServer(server.app))
-    await client.start_server()
+    html = PAGE
 
-    try:
-        html = await (await client.get("/")).text()
+    # клас стоїть на обох таблицях («Склад» і «Документи»)
+    assert html.count("border-collapse compact-table") == 2
 
-        # клас стоїть на обох таблицях («Склад» і «Документи»)
-        assert html.count("border-collapse compact-table") == 2
+    # tracking-wider прибрано саме із заголовків таблиць (у логах він лишається)
+    assert html.count("uppercase tracking-wider border-b") == 0
+    assert html.count("text-slate-400 text-xs font-semibold uppercase border-b border-slate-800") == 2
 
-        # tracking-wider прибрано саме із заголовків таблиць (у логах він лишається)
-        assert html.count("uppercase tracking-wider border-b") == 0
-        assert html.count("text-slate-400 text-xs font-semibold uppercase border-b border-slate-800") == 2
-
-        # !important обов'язковий: Tailwind з CDN вставляє утиліти в <head> пізніше
-        # за вбудований <style>, тому без нього правила мовчки програють px-3 / py-4
-        assert ".compact-table > thead > tr > th" in html
-        assert ".compact-table > tbody > tr > td:not([colspan])" in html
-        assert "padding: 8px !important;" in html
-        assert "font-size: 10px !important;" in html
-    finally:
-        await client.close()
-        db.close()
+    # !important обов'язковий: Tailwind з CDN вставляє утиліти в <head> пізніше
+    # за вбудований <style>, тому без нього правила мовчки програють px-3 / py-4
+    assert ".compact-table > thead > tr > th" in html
+    assert ".compact-table > tbody > tr > td:not([colspan])" in html
+    assert "padding: 8px !important;" in html
+    assert "font-size: 10px !important;" in html
 
 
-@pytest.mark.asyncio
-async def test_documents_table_has_card_mode_markup(warehouse_env):
+def test_documents_table_has_card_mode_markup():
     """Картковий режим нижче 1000px: маркер-клас, data-label і адаптивний CSS."""
-    db, fs, vs = warehouse_env
-    server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
-    client = TestClient(TestServer(server.app))
-    await client.start_server()
+    html = PAGE
 
-    try:
-        html = await (await client.get("/")).text()
+    # маркер стоїть на обох таблицях — «Склад» доєднався у слайсі #22
+    assert html.count("compact-table card-table") == 2
 
-        # маркер стоїть на обох таблицях — «Склад» доєднався у слайсі #22
-        assert html.count("compact-table card-table") == 2
+    # кожна клітинка рядка документа підписана текстом свого <th>
+    for label in ("Превʼю", "Файл", "Тип", "Тип документу", "Статус",
+                  "Дата завантаження", "№ документа", "Затребував",
+                  "Через кого", "Позицій", "Дії"):
+        assert f'data-label="{label}"' in html, label
+    # рахунок обмежено тілом renderDocs, щоб підписи інших таблиць і CSS-селектори
+    # з data-label="…" не впливали на число
+    render_docs = JS["documents_render"]
+    assert render_docs.count(' data-label="') == 11
 
-        # кожна клітинка рядка документа підписана текстом свого <th>
-        for label in ("Превʼю", "Файл", "Тип", "Тип документу", "Статус",
-                      "Дата завантаження", "№ документа", "Затребував",
-                      "Через кого", "Позицій", "Дії"):
-            assert f'data-label="{label}"' in html, label
-        # рахунок обмежено тілом renderDocs, щоб підписи інших таблиць і CSS-селектори
-        # з data-label="…" не впливали на число
-        render_docs = html.split("function renderDocs(docs)")[1].split("tbody.innerHTML = html;")[0]
-        assert render_docs.count(' data-label="') == 11
+    # шеврон і повноширинні клітинки розгорнутих блоків підпису не отримують
+    # (у клітинці шеврона живе ще й мітка «не в обліку» — #29)
+    assert '<td class="py-4 px-3 whitespace-nowrap"><i id="doc-chevron-' in html
+    assert '<td colspan="12" class="p-0">' in html  # рядок деталей — без data-label
 
-        # шеврон і повноширинні клітинки розгорнутих блоків підпису не отримують
-        # (у клітинці шеврона живе ще й мітка «не в обліку» — #29)
-        assert '<td class="py-4 px-3 whitespace-nowrap"><i id="doc-chevron-' in html
-        assert '<td colspan="12" class="p-0">' in html  # рядок деталей — без data-label
+    # перемикання таблиця/картки робить виключно CSS, без JS-розгалужень за шириною.
+    # 999.98px, а не 1000px: межа мусить працювати в обидва боки —
+    # при 1000px ще таблиця, при 999px уже картки.
+    assert "@media (max-width: 999.98px)" in html
+    assert "attr(data-label)" in html
+    assert ".card-table thead { display: none; }" in html
+    assert "innerWidth" not in html
 
-        # перемикання таблиця/картки робить виключно CSS, без JS-розгалужень за шириною.
-        # 999.98px, а не 1000px: межа мусить працювати в обидва боки —
-        # при 1000px ще таблиця, при 999px уже картки.
-        assert "@media (max-width: 999.98px)" in html
-        assert "attr(data-label)" in html
-        assert ".card-table thead { display: none; }" in html
-        assert "innerWidth" not in html
-
-        # шеврон у картці переїжджає у правий верхній кут, а не лишається порожнім рядком
-        assert ".card-table > tbody > tr:not(.hidden) > td:first-child:not([colspan])" in html
-        assert "white-space: nowrap;" in html  # числа й дати не рвуться посеред значення
-    finally:
-        await client.close()
-        db.close()
+    # шеврон у картці переїжджає у правий верхній кут, а не лишається порожнім рядком
+    assert ".card-table > tbody > tr:not(.hidden) > td:first-child:not([colspan])" in html
+    assert "white-space: nowrap;" in html  # числа й дати не рвуться посеред значення
 
 
-@pytest.mark.asyncio
-async def test_warehouse_table_has_card_mode_markup(warehouse_env):
+def test_warehouse_table_has_card_mode_markup():
     """Слайс #22: таблиця «Склад» стає картками, олівці видимі й стоять біля значення."""
-    db, fs, vs = warehouse_env
-    server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
-    client = TestClient(TestServer(server.app))
-    await client.start_server()
+    html = PAGE
 
-    try:
-        html = await (await client.get("/")).text()
+    # кожна з дев'яти підписаних колонок складу підписується текстом свого <th>
+    for label in ("Ном. номер", "Найменування", "Прихід", "Розхід", "Залишок",
+                  "Мін. залишок", "Од.виміру", "Постачальник", "Примітки"):
+        assert f'data-label="{label}"' in html, label
 
-        # кожна з дев'яти підписаних колонок складу підписується текстом свого <th>
-        for label in ("Ном. номер", "Найменування", "Прихід", "Розхід", "Залишок",
-                      "Мін. залишок", "Од.виміру", "Постачальник", "Примітки"):
-            assert f'data-label="{label}"' in html, label
+    # десята колонка — шеврон: підпису не має, як і рядок розгорнутих транзакцій
+    assert '<td class="py-4 px-3"><i id="chevron-' in html
+    assert '<td colspan="10" class="p-0">' in html
 
-        # десята колонка — шеврон: підпису не має, як і рядок розгорнутих транзакцій
-        assert '<td class="py-4 px-3"><i id="chevron-' in html
-        assert '<td colspan="10" class="p-0">' in html
+    # рахунок обмежено тілом renderItems: CSS-селектори з data-label="…" і підписи
+    # вкладених таблиць не мають впливати на число
+    render_items = JS["items_table"]
+    assert render_items.count(' data-label="') == 9
 
-        # рахунок обмежено тілом renderItems: CSS-селектори з data-label="…" і підписи
-        # вкладених таблиць не мають впливати на число
-        render_items = html.split("function renderItems(items)")[1].split("tbody.innerHTML = html;")[0]
-        assert render_items.count(' data-label="') == 9
+    # олівці редагування: у картці вони opacity-1 без наведення, а justify-content
+    # flex-start перебиває утиліту justify-between, тож олівець стоїть біля значення
+    assert ".card-table > tbody > tr > td button { opacity: 1 !important; }" in html
+    assert ".card-table > tbody > tr > td > span.flex { justify-content: flex-start !important; }" in html
 
-        # олівці редагування: у картці вони opacity-1 без наведення, а justify-content
-        # flex-start перебиває утиліту justify-between, тож олівець стоїть біля значення
-        assert ".card-table > tbody > tr > td button { opacity: 1 !important; }" in html
-        assert ".card-table > tbody > tr > td > span.flex { justify-content: flex-start !important; }" in html
+    # підсвітка «нижче мінімуму»: правило картки специфічніше за утиліти Tailwind з CDN,
+    # тому рамку й тло повертає окреме правило за маркером row-low
+    assert "rowClass = 'row-low bg-rose-950/40" in html
+    assert ".card-table > tbody > tr.row-low" in html
+    assert "border-left: 4px solid #f43f5e !important;" in html
 
-        # підсвітка «нижче мінімуму»: правило картки специфічніше за утиліти Tailwind з CDN,
-        # тому рамку й тло повертає окреме правило за маркером row-low
-        assert "rowClass = 'row-low bg-rose-950/40" in html
-        assert ".card-table > tbody > tr.row-low" in html
-        assert "border-left: 4px solid #f43f5e !important;" in html
-
-        # числові колонки складу не рвуться посеред значення
-        for label in ("Прихід", "Розхід", "Залишок", "Мін. залишок"):
-            assert f'.card-table > tbody > tr > td[data-label="{label}"]' in html, label
-    finally:
-        await client.close()
-        db.close()
+    # числові колонки складу не рвуться посеред значення
+    for label in ("Прихід", "Розхід", "Залишок", "Мін. залишок"):
+        assert f'.card-table > tbody > tr > td[data-label="{label}"]' in html, label
 
 
-@pytest.mark.asyncio
-async def test_nested_tables_have_card_mode_markup(warehouse_env):
+def test_nested_tables_have_card_mode_markup():
     """Слайс #23: історія транзакцій і позиції документа теж стають картками."""
-    db, fs, vs = warehouse_env
-    server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
-    client = TestClient(TestServer(server.app))
-    await client.start_server()
+    html = PAGE
 
-    try:
-        html = await (await client.get("/")).text()
+    # історія транзакцій: 10 підписів усередині самої таблиці
+    tx_table = html.split('<table class="w-full card-table">')[1].split("</table>")[0]
+    for label in ("Дата", "Тип", "Тип док.", "Кількість", "№ накл.",
+                  "Залишок", "Документ", "Затребував", "Через кого", "Джерело"):
+        assert f'data-label="{label}"' in tx_table, label
+    assert tx_table.count(' data-label="') == 10
 
-        # історія транзакцій: 10 підписів усередині самої таблиці
-        tx_table = html.split('<table class="w-full card-table">')[1].split("</table>")[0]
-        for label in ("Дата", "Тип", "Тип док.", "Кількість", "№ накл.",
-                      "Залишок", "Документ", "Затребував", "Через кого", "Джерело"):
-            assert f'data-label="{label}"' in tx_table, label
-        assert tx_table.count(' data-label="') == 10
+    # позиції документа: два окремі рендери — для фото й для Excel —
+    # з однаковим набором із 6 колонок в обох
+    item_tables = html.split('<table class="w-full text-xs card-table">')[1:]
+    assert len(item_tables) == 2
+    for body in (chunk.split("</table>")[0] for chunk in item_tables):
+        for label in ("Ном. номер", "Найменування", "Тип", "Кількість", "Од.", "Джерело"):
+            assert f'data-label="{label}"' in body, label
+        assert body.count(' data-label="') == 6
 
-        # позиції документа: два окремі рендери — для фото й для Excel —
-        # з однаковим набором із 6 колонок в обох
-        item_tables = html.split('<table class="w-full text-xs card-table">')[1:]
-        assert len(item_tables) == 2
-        for body in (chunk.split("</table>")[0] for chunk in item_tables):
-            for label in ("Ном. номер", "Найменування", "Тип", "Кількість", "Од.", "Джерело"):
-                assert f'data-label="{label}"' in body, label
-            assert body.count(' data-label="') == 6
+    # перша клітинка вкладеної таблиці — змістовна колонка, а не шеврон,
+    # тож правило правого верхнього кута з #21 для неї скасовується
+    assert ".card-table .card-table > tbody > tr:not(.hidden) > td:first-child:not([colspan])" in html
 
-        # перша клітинка вкладеної таблиці — змістовна колонка, а не шеврон,
-        # тож правило правого верхнього кута з #21 для неї скасовується
-        assert ".card-table .card-table > tbody > tr:not(.hidden) > td:first-child:not([colspan])" in html
+    # порожній стан не став таблицею — це звичайний абзац, який картковий режим не чіпає
+    assert '\'<p class="text-slate-500 py-2">Немає транзакцій.</p>\'' in html
 
-        # порожній стан не став таблицею — це звичайний абзац, який картковий режим не чіпає
-        assert '\'<p class="text-slate-500 py-2">Немає транзакцій.</p>\'' in html
-
-        # дати, кількості й номери накладних не рвуться посеред значення
-        for label in ("Дата", "Кількість", "№ накл."):
-            assert f'.card-table > tbody > tr > td[data-label="{label}"]' in html, label
-    finally:
-        await client.close()
-        db.close()
+    # дати, кількості й номери накладних не рвуться посеред значення
+    for label in ("Дата", "Кількість", "№ накл."):
+        assert f'.card-table > tbody > tr > td[data-label="{label}"]' in html, label
 
 
 @pytest.mark.asyncio
@@ -1388,42 +1317,28 @@ async def test_api_document_ocr_returns_all_recognition_fields(warehouse_env):
         db.close()
 
 
-@pytest.mark.asyncio
-async def test_document_card_renders_all_recognition_fields(warehouse_env):
+def test_document_card_renders_all_recognition_fields():
     """#27: розгорнута картка будує блок кожного з пʼяти полів — значенням або прочерком."""
-    db, fs, vs = warehouse_env
-    server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
-    client = TestClient(TestServer(server.app))
-    await client.start_server()
+    card = JS["document_impact"]
 
-    try:
-        html = await (await client.get("/")).text()
-        card = html.split("async function reloadDocImpact", 1)[1].split("async function toggleDocImpact", 1)[0]
+    # жодне з пʼяти полів не рендериться умовно
+    for guard in ("if (data.doc_type)", "if (data.doc_number)", "if (data.doc_date)",
+                  "if (data.requested_by)", "if (data.requested_via)"):
+        assert guard not in card, guard
 
-        # жодне з пʼяти полів не рендериться умовно
-        for guard in ("if (data.doc_type)", "if (data.doc_number)", "if (data.doc_date)",
-                      "if (data.requested_by)", "if (data.requested_via)"):
-            assert guard not in card, guard
+    # усі пʼять полів малюються завжди: заповнене — значенням, порожнє — прочерком
+    for label in ("Тип", "№", "Дата", "Затребував", "Через кого"):
+        assert f"metaField('{label}'" in card, label
+    assert "metaDash" in card
 
-        # усі пʼять полів малюються завжди: заповнене — значенням, порожнє — прочерком
-        for label in ("Тип", "№", "Дата", "Затребував", "Через кого"):
-            assert f"metaField('{label}'" in card, label
-        assert "metaDash" in card
-
-        # у Excel-документа й системного документа розділу розпізнаних полів немає, як і раніше
-        excel_branch = card.split("// Excel / other non-photo documents", 1)[1]
-        assert "metaField(" not in excel_branch
-    finally:
-        await client.close()
-        db.close()
+    # у Excel-документа й системного документа розділу розпізнаних полів немає, як і раніше
+    excel_branch = card.split("// Excel / other non-photo documents", 1)[1]
+    assert "metaField(" not in excel_branch
 
 
 # ---- Слайс #25: сортування таблиці документів ----
 
 NODE = shutil.which("node")
-
-DOC_SORT_BLOCK_START = "// ---- Сортування таблиці документів (#25) ----"
-DOC_SORT_BLOCK_END = "// ---- Кінець сортування таблиці документів (#25) ----"
 
 # Заголовок → ключ сортування. Девʼять колонок; превʼю, розгортання й дії не сортуються.
 DOC_SORT_HEADERS = (
@@ -1481,208 +1396,144 @@ if (payload.mode === 'sort') {
 """
 
 
-def _run_doc_sort(html, payload):
-    """Проганяє сортувальний блок сторінки через node і повертає розібраний результат."""
-    block = html.split(DOC_SORT_BLOCK_START, 1)[1].split(DOC_SORT_BLOCK_END, 1)[0]
+def _run_doc_sort(payload):
+    """Проганяє сортувальний модуль сторінки через node і повертає розібраний результат."""
     with tempfile.TemporaryDirectory() as tmp:
         script = os.path.join(tmp, "doc_sort.js")
         with open(script, "w", encoding="utf-8") as fh:
-            fh.write(block + _DOC_SORT_DRIVER)
+            fh.write(JS["document_sort"] + _DOC_SORT_DRIVER)
         proc = subprocess.run([NODE, script], input=json.dumps(payload),
                               capture_output=True, text=True, encoding="utf-8")
     assert proc.returncode == 0, proc.stderr
     return json.loads(proc.stdout)
 
 
-def _sorted_ids(html, key, direction, docs=None):
-    return _run_doc_sort(html, {"mode": "sort", "docs": docs or DOC_SORT_DOCS,
-                                "sort": {"key": key, "dir": direction}})
+def _sorted_ids(key, direction, docs=None):
+    return _run_doc_sort({"mode": "sort", "docs": docs or DOC_SORT_DOCS,
+                          "sort": {"key": key, "dir": direction}})
 
 
-async def _documents_page(warehouse_env):
-    """Піднімає сторінку й віддає HTML разом із клієнтом і базою для закриття."""
-    db, fs, vs = warehouse_env
-    server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
-    client = TestClient(TestServer(server.app))
-    await client.start_server()
-    return client, db, await (await client.get("/")).text()
-
-
-@pytest.mark.asyncio
-async def test_documents_headers_are_clickable_and_sortable(warehouse_env):
+def test_documents_headers_are_clickable_and_sortable():
     """#25: девʼять змістовних колонок сортуються кліком, превʼю/розгортання/дії — ні."""
-    client, db, html = await _documents_page(warehouse_env)
-    try:
-        head = html.split('id="docs-tbody"')[0]
+    head = PAGE.split('id="docs-tbody"')[0]
 
-        for label, key in DOC_SORT_HEADERS:
-            assert f'id="doc-sort-{key}"' in head, key
-            assert f"toggleDocSort('{key}')" in head, key
-            assert f'id="doc-sort-icon-{key}"' in head, key
-            assert label in head, label
+    for label, key in DOC_SORT_HEADERS:
+        assert f'id="doc-sort-{key}"' in head, key
+        assert f"toggleDocSort('{key}')" in head, key
+        assert f'id="doc-sort-icon-{key}"' in head, key
+        assert label in head, label
 
-        # рівно девʼять сортованих заголовків — і жодного зайвого
-        assert head.count("toggleDocSort(") == 9
+    # рівно девʼять сортованих заголовків — і жодного зайвого
+    assert head.count("toggleDocSort(") == 9
 
-        # колонки без змістовного значення лишились неклікабельними
-        # (колонку розгортання розширено під мітку «не в обліку» — #29)
-        assert '<th class="py-4 px-3 w-14"></th>' in head
-        assert '<th class="py-4 px-3">Превʼю</th>' in head
-        assert '<th class="py-4 px-3 text-right">Дії</th>' in head
-    finally:
-        await client.close()
-        db.close()
+    # колонки без змістовного значення лишились неклікабельними
+    # (колонку розгортання розширено під мітку «не в обліку» — #29)
+    assert '<th class="py-4 px-3 w-14"></th>' in head
+    assert '<th class="py-4 px-3">Превʼю</th>' in head
+    assert '<th class="py-4 px-3 text-right">Дії</th>' in head
 
 
-@pytest.mark.asyncio
-async def test_documents_sort_state_lives_in_page_memory_and_applies_on_every_render(warehouse_env):
+def test_documents_sort_state_lives_in_page_memory_and_applies_on_every_render():
     """#25: стан сортування — поряд зі станом фільтра, застосовується при кожному рендері."""
-    client, db, html = await _documents_page(warehouse_env)
-    try:
-        # стан оголошено на рівні сторінки, поряд зі станом фільтра
-        assert "let activeFilter = '';" in html
-        assert "let docSort = { key: null, dir: null };" in html
-        docs_head = html.split('id="docs-tbody"')[0]
-        assert "let docSort" not in docs_head  # не в розмітці, а в скрипті
+    # стан оголошено на рівні сторінки, поряд зі станом фільтра
+    assert "let activeFilter = '';" in PAGE
+    assert "let docSort = { key: null, dir: null };" in PAGE
+    docs_head = PAGE.split('id="docs-tbody"')[0]
+    assert "let docSort" not in docs_head  # не в розмітці, а в скрипті
 
-        # сортується саме переданий список (результат пошуку й фільтрів), а не allDocs
-        render_docs = html.split("function renderDocs(docs)")[1].split("tbody.innerHTML = html;")[0]
-        assert "lastRenderedDocs = docs;" in render_docs
-        assert "applyDocSort(docs)" in render_docs
-        assert "applyDocSort(allDocs)" not in html
+    # сортується саме переданий список (результат пошуку й фільтрів), а не allDocs
+    render_docs = JS["documents_render"]
+    assert "lastRenderedDocs = docs;" in render_docs
+    assert "applyDocSort(docs)" in render_docs
+    assert "applyDocSort(allDocs)" not in PAGE
 
-        # клік перемальовує саме той список, який показано зараз
-        assert "renderDocs(lastRenderedDocs);" in html
+    # клік перемальовує саме той список, який показано зараз
+    assert "renderDocs(lastRenderedDocs);" in PAGE
 
-        # стан живе лише в памʼяті сторінки — перезавантаження його скидає
-        assert "localStorage" not in html
-        assert "sessionStorage" not in html
-    finally:
-        await client.close()
-        db.close()
+    # стан живе лише в памʼяті сторінки — перезавантаження його скидає
+    assert "localStorage" not in PAGE
+    assert "sessionStorage" not in PAGE
 
 
-@pytest.mark.asyncio
 @pytest.mark.skipif(NODE is None, reason="node недоступний — JS сторінки не виконати")
-async def test_documents_sort_numbers_put_10_after_9(warehouse_env):
+def test_documents_sort_numbers_put_10_after_9():
     """#25: номер документа й кількість позицій порівнюються числово, не текстово."""
-    client, db, html = await _documents_page(warehouse_env)
-    try:
-        # 9 → 10 → 2143, порожній номер завжди в кінці
-        assert _sorted_ids(html, "doc_number", "asc") == [1, 2, 4, 3]
-        assert _sorted_ids(html, "doc_number", "desc") == [4, 2, 1, 3]
+    # 9 → 10 → 2143, порожній номер завжди в кінці
+    assert _sorted_ids("doc_number", "asc") == [1, 2, 4, 3]
+    assert _sorted_ids("doc_number", "desc") == [4, 2, 1, 3]
 
-        # кількість позицій: 9 → 10 → 12, порожня кількість у кінці
-        assert _sorted_ids(html, "transaction_count", "asc") == [1, 2, 4, 3]
-        assert _sorted_ids(html, "transaction_count", "desc") == [4, 2, 1, 3]
-    finally:
-        await client.close()
-        db.close()
+    # кількість позицій: 9 → 10 → 12, порожня кількість у кінці
+    assert _sorted_ids("transaction_count", "asc") == [1, 2, 4, 3]
+    assert _sorted_ids("transaction_count", "desc") == [4, 2, 1, 3]
 
 
-@pytest.mark.asyncio
 @pytest.mark.skipif(NODE is None, reason="node недоступний — JS сторінки не виконати")
-async def test_documents_sort_date_uses_real_time(warehouse_env):
+def test_documents_sort_date_uses_real_time():
     """#25: дата сортується за часом, а не за рядком (1000000000 новіша за 999999999)."""
-    client, db, html = await _documents_page(warehouse_env)
-    try:
-        assert _sorted_ids(html, "uploaded_at", "asc") == [1, 2, 4, 3]
-        assert _sorted_ids(html, "uploaded_at", "desc") == [4, 2, 1, 3]
-    finally:
-        await client.close()
-        db.close()
+    assert _sorted_ids("uploaded_at", "asc") == [1, 2, 4, 3]
+    assert _sorted_ids("uploaded_at", "desc") == [4, 2, 1, 3]
 
 
-@pytest.mark.asyncio
 @pytest.mark.skipif(NODE is None, reason="node недоступний — JS сторінки не виконати")
-async def test_documents_sort_status_follows_lifecycle(warehouse_env):
+def test_documents_sort_status_follows_lifecycle():
     """#25: статуси шикуються за життєвим циклом, а не за алфавітом."""
-    client, db, html = await _documents_page(warehouse_env)
-    try:
-        # Черга → OCR → Вектори → Завершено → Помилка
-        assert _sorted_ids(html, "status", "asc") == [2, 4, 1, 3]
-        assert _sorted_ids(html, "status", "desc") == [3, 1, 4, 2]
-        assert "DOC_STATUS_ORDER = ['queued', 'processing_ocr', 'processing_emb', 'completed', 'error']" in html
-    finally:
-        await client.close()
-        db.close()
+    # Черга → OCR → Вектори → Завершено → Помилка
+    assert _sorted_ids("status", "asc") == [2, 4, 1, 3]
+    assert _sorted_ids("status", "desc") == [3, 1, 4, 2]
+    assert "DOC_STATUS_ORDER = ['queued', 'processing_ocr', 'processing_emb', 'completed', 'error']" in PAGE
 
 
-@pytest.mark.asyncio
 @pytest.mark.skipif(NODE is None, reason="node недоступний — JS сторінки не виконати")
-async def test_documents_sort_text_columns_and_empty_values_last(warehouse_env):
+def test_documents_sort_text_columns_and_empty_values_last():
     """#25: текстові колонки сортуються, порожнє значення завжди в кінці — в обидва боки."""
-    client, db, html = await _documents_page(warehouse_env)
-    try:
-        # порожній тип документу лишається останнім і за зростанням, і за спаданням
-        assert _sorted_ids(html, "doc_type", "asc") == [2, 1, 4, 3]
-        assert _sorted_ids(html, "doc_type", "desc") == [1, 4, 2, 3]
-        assert _sorted_ids(html, "filename", "asc") == [2, 1, 3, 4]
+    # порожній тип документу лишається останнім і за зростанням, і за спаданням
+    assert _sorted_ids("doc_type", "asc") == [2, 1, 4, 3]
+    assert _sorted_ids("doc_type", "desc") == [1, 4, 2, 3]
+    assert _sorted_ids("filename", "asc") == [2, 1, 3, 4]
 
-        # порожній «через кого» — теж у кінці
-        assert _sorted_ids(html, "requested_via", "asc") == [1, 4, 2, 3]
-        assert _sorted_ids(html, "requested_via", "desc") == [2, 1, 4, 3]
-    finally:
-        await client.close()
-        db.close()
+    # порожній «через кого» — теж у кінці
+    assert _sorted_ids("requested_via", "asc") == [1, 4, 2, 3]
+    assert _sorted_ids("requested_via", "desc") == [2, 1, 4, 3]
 
 
-@pytest.mark.asyncio
 @pytest.mark.skipif(NODE is None, reason="node недоступний — JS сторінки не виконати")
-async def test_documents_sort_click_cycle_returns_to_default_order(warehouse_env):
+def test_documents_sort_click_cycle_returns_to_default_order():
     """#25: зростання → спадання → типовий порядок; сортується одна колонка за раз."""
-    client, db, html = await _documents_page(warehouse_env)
-    try:
-        result = _run_doc_sort(html, {"mode": "cycle", "docs": DOC_SORT_DOCS,
-                                      "clicks": ["doc_number", "doc_number", "doc_number"],
-                                      "refresh": True})
-        assert result["states"] == ["doc_number:asc", "doc_number:desc", "null:null"]
-        assert result["rendered"][:3] == [[1, 2, 4, 3], [4, 2, 1, 3], [1, 2, 3, 4]]
-        # автооновлення після третього кліку: типовий порядок зберігся
-        assert result["rendered"][3] == [1, 2, 3, 4]
+    result = _run_doc_sort({"mode": "cycle", "docs": DOC_SORT_DOCS,
+                            "clicks": ["doc_number", "doc_number", "doc_number"],
+                            "refresh": True})
+    assert result["states"] == ["doc_number:asc", "doc_number:desc", "null:null"]
+    assert result["rendered"][:3] == [[1, 2, 4, 3], [4, 2, 1, 3], [1, 2, 3, 4]]
+    # автооновлення після третього кліку: типовий порядок зберігся
+    assert result["rendered"][3] == [1, 2, 3, 4]
 
-        # перехід на іншу колонку скидає попередню й починає зі зростання
-        switch = _run_doc_sort(html, {"mode": "cycle", "docs": DOC_SORT_DOCS,
-                                      "clicks": ["doc_number", "filename"], "refresh": True})
-        assert switch["states"] == ["doc_number:asc", "filename:asc"]
-        assert switch["rendered"][-1] == [2, 1, 3, 4]
-    finally:
-        await client.close()
-        db.close()
+    # перехід на іншу колонку скидає попередню й починає зі зростання
+    switch = _run_doc_sort({"mode": "cycle", "docs": DOC_SORT_DOCS,
+                            "clicks": ["doc_number", "filename"], "refresh": True})
+    assert switch["states"] == ["doc_number:asc", "filename:asc"]
+    assert switch["rendered"][-1] == [2, 1, 3, 4]
 
 
-@pytest.mark.asyncio
 @pytest.mark.skipif(NODE is None, reason="node недоступний — JS сторінки не виконати")
-async def test_documents_sort_applies_to_filtered_subset_only(warehouse_env):
+def test_documents_sort_applies_to_filtered_subset_only():
     """#25: сортується результат пошуку й фільтрів, а не повний список."""
-    client, db, html = await _documents_page(warehouse_env)
-    try:
-        subset = [DOC_SORT_DOCS[2], DOC_SORT_DOCS[0]]  # «10» у підмножині немає
-        assert _sorted_ids(html, "doc_number", "asc", docs=subset) == [1, 3]
-        assert _sorted_ids(html, "doc_number", "desc", docs=subset) == [1, 3]
-    finally:
-        await client.close()
-        db.close()
+    subset = [DOC_SORT_DOCS[2], DOC_SORT_DOCS[0]]  # «10» у підмножині немає
+    assert _sorted_ids("doc_number", "asc", docs=subset) == [1, 3]
+    assert _sorted_ids("doc_number", "desc", docs=subset) == [1, 3]
 
 
-@pytest.mark.asyncio
-async def test_documents_sort_indicator_shows_column_and_direction(warehouse_env):
+def test_documents_sort_indicator_shows_column_and_direction():
     """#25: видно, яка колонка активна і в якому напрямку."""
-    client, db, html = await _documents_page(warehouse_env)
-    try:
-        indicators = html.split("function renderDocSortIndicators()")[1].split("\n}\n")[0]
-        assert "fa-sort-up" in indicators
-        assert "fa-sort-down" in indicators
-        assert "fa-sort " in indicators          # нейтральний стан неактивної колонки
-        assert "docSort.key === key" in indicators
-        assert "docSort.dir === 'desc'" in indicators
+    indicators = JS["document_sort"]
+    assert "fa-sort-up" in indicators
+    assert "fa-sort-down" in indicators
+    assert "fa-sort " in indicators          # нейтральний стан неактивної колонки
+    assert "docSort.key === key" in indicators
+    assert "docSort.dir === 'desc'" in indicators
 
-        # індикатор оновлюється після кожного кліку
-        toggle = html.split("function toggleDocSort(key)")[1].split("\n}\n")[0]
-        assert "renderDocSortIndicators();" in toggle
-    finally:
-        await client.close()
-        db.close()
+    # індикатор оновлюється після кожного кліку
+    toggle = JS["document_sort"]
+    assert "renderDocSortIndicators();" in toggle
 
 
 @pytest.mark.asyncio
@@ -2107,9 +1958,9 @@ _DOC_EDIT_DRIVER = """
 """
 
 
-def _run_doc_edit(html, payload):
+def _run_doc_edit(payload):
     """Проганяє сторінку в node: рендер картки й обидва шляхи правки."""
-    page = html.split("<script>", 1)[1].split("</script>", 1)[0]
+    page = "\n".join(JS.values())
     with tempfile.TemporaryDirectory() as tmp:
         script = os.path.join(tmp, "doc_edit.js")
         payload_path = os.path.join(tmp, "payload.json")
@@ -2149,92 +2000,62 @@ _DOC_EDIT_PAYLOAD = {
 }
 
 
-@pytest.mark.asyncio
 @pytest.mark.skipif(NODE is None, reason="node недоступний — JS сторінки не виконати")
-async def test_document_card_has_a_pencil_in_every_recognition_field(warehouse_env):
+def test_document_card_has_a_pencil_in_every_recognition_field():
     """#31: у картці кожне з пʼяти полів має олівець — і заповнене, і порожнє."""
-    client, db, html = await _documents_page(warehouse_env)
-    try:
-        result = _run_doc_edit(html, _DOC_EDIT_PAYLOAD)
-        card = result["card"]
+    card = _run_doc_edit(_DOC_EDIT_PAYLOAD)["card"]
 
-        # олівець кожного поля відкриває редактор саме цього поля
-        for field in RECOGNITION_FIELDS:
-            assert f"openDocFieldModal(1, '{field}')" in card, field
-        assert card.count("openDocFieldModal(") == 5
+    # олівець кожного поля відкриває редактор саме цього поля
+    for field in RECOGNITION_FIELDS:
+        assert f"openDocFieldModal(1, '{field}')" in card, field
+    assert card.count("openDocFieldModal(") == 5
 
-        # порожнє поле — прочерк з олівцем
-        assert '—</span><button onclick="event.stopPropagation(); openDocFieldModal(1, \'requested_by\')"' in card
-        # заповнене — значенням з олівцем
-        assert '0000215</span><button onclick="event.stopPropagation(); openDocFieldModal(1, \'doc_number\')"' in card
+    # порожнє поле — прочерк з олівцем
+    assert '—</span><button onclick="event.stopPropagation(); openDocFieldModal(1, \'requested_by\')"' in card
+    # заповнене — значенням з олівцем
+    assert '0000215</span><button onclick="event.stopPropagation(); openDocFieldModal(1, \'doc_number\')"' in card
 
-        # усі пʼять полів бланка присутні в картці
-        for label in ("Тип", "№", "Дата", "Затребував", "Через кого"):
-            assert f"{label}:" in card, label
-    finally:
-        await client.close()
-        db.close()
+    # усі пʼять полів бланка присутні в картці
+    for label in ("Тип", "№", "Дата", "Затребував", "Через кого"):
+        assert f"{label}:" in card, label
 
 
-@pytest.mark.asyncio
 @pytest.mark.skipif(NODE is None, reason="node недоступний — JS сторінки не виконати")
-async def test_document_card_edits_go_to_the_document_endpoint(warehouse_env):
+def test_document_card_edits_go_to_the_document_endpoint():
     """#31: тип документа обирається зі списку, текстові поля — полем вводу; обидва йдуть на свій endpoint."""
-    client, db, html = await _documents_page(warehouse_env)
-    try:
-        result = _run_doc_edit(html, _DOC_EDIT_PAYLOAD)
+    result = _run_doc_edit(_DOC_EDIT_PAYLOAD)
 
-        # тип документа: список із двох значень, поточне значення вже обране
-        assert result["typeEditor"] == {"selectVisible": True, "inputHidden": True, "preselected": "НАКЛАДНА"}
-        # без обраного типу правка не йде
-        assert result["afterEmptyChoice"]["requests"] == 0
-        assert result["afterEmptyChoice"]["error"]
-        # текстове поле: поле вводу замість списку, з поточним значенням
-        assert result["textEditor"] == {"selectHidden": True, "inputVisible": True, "currentValue": ""}
-        # правка позиції складу не перехоплюється редактором документа
-        assert result["itemEditor"] == {"docField": None, "selectHidden": True}
+    # тип документа: список із двох значень, поточне значення вже обране
+    assert result["typeEditor"] == {"selectVisible": True, "inputHidden": True, "preselected": "НАКЛАДНА"}
+    # без обраного типу правка не йде
+    assert result["afterEmptyChoice"]["requests"] == 0
+    assert result["afterEmptyChoice"]["error"]
+    # текстове поле: поле вводу замість списку, з поточним значенням
+    assert result["textEditor"] == {"selectHidden": True, "inputVisible": True, "currentValue": ""}
+    # правка позиції складу не перехоплюється редактором документа
+    assert result["itemEditor"] == {"docField": None, "selectHidden": True}
 
-        assert result["requests"] == [
-            {"url": "/api/warehouse/documents/1/edit",
-             "body": {"field": "doc_type", "value": "ВИМОГА", "comment": ""}},
-            {"url": "/api/warehouse/documents/1/edit",
-             "body": {"field": "requested_by", "value": "комірник (ПІБ)", "comment": "OCR не прочитав"}},
-        ]
-    finally:
-        await client.close()
-        db.close()
+    assert result["requests"] == [
+        {"url": "/api/warehouse/documents/1/edit",
+         "body": {"field": "doc_type", "value": "ВИМОГА", "comment": ""}},
+        {"url": "/api/warehouse/documents/1/edit",
+         "body": {"field": "requested_by", "value": "комірник (ПІБ)", "comment": "OCR не прочитав"}},
+    ]
 
 
-@pytest.mark.asyncio
-async def test_document_type_editor_offers_exactly_the_two_form_values(warehouse_env):
+def test_document_type_editor_offers_exactly_the_two_form_values():
     """#31: список типів документа містить рівно «НАКЛАДНА» і «ВИМОГА»."""
-    client, db, html = await _documents_page(warehouse_env)
-    try:
-        modal = html.split('id="edit-doc-type"', 1)[1].split("</select>", 1)[0]
-        assert modal.count("<option") == 2
-        assert '<option value="НАКЛАДНА">' in modal
-        assert '<option value="ВИМОГА">' in modal
-    finally:
-        await client.close()
-        db.close()
+    modal = PAGE.split('id="edit-doc-type"', 1)[1].split("</select>", 1)[0]
+    assert modal.count("<option") == 2
+    assert '<option value="НАКЛАДНА">' in modal
+    assert '<option value="ВИМОГА">' in modal
 
 
-@pytest.mark.asyncio
-async def test_manual_edit_mark_is_rendered_in_documents_and_warehouse_rows(warehouse_env):
+def test_manual_edit_mark_is_rendered_in_documents_and_warehouse_rows():
     """#31: обидва рядки малюють позначку ручного редагування."""
-    client, db, html = await _documents_page(warehouse_env)
-    try:
-        docs_row = html.split("function renderDocs(docs)")[1].split("tbody.innerHTML = html;")[0]
-        assert "manualEditMark(doc.manual_edited)" in docs_row
-
-        tx_row = html.split("async function reloadTransactions(itemId)")[1].split("function toggleTransactions")[0]
-        assert "manualEditMark(tx.manual_edited)" in tx_row
-
-        mark = html.split("function manualEditMark(isEdited)")[1].split("\n}")[0]
-        assert "title=\"Правка вручну\"" in mark
-    finally:
-        await client.close()
-        db.close()
+    assert "manualEditMark(doc.manual_edited)" in JS["documents_render"]
+    assert "manualEditMark(tx.manual_edited)" in JS["item_transactions"]
+    assert "title=\"Правка вручну\"" in JS["document_delete"]
 
 
 # ---- Слайс #26: підсвічування дублів «№ документа» ----
@@ -2264,9 +2085,9 @@ console.log(JSON.stringify({ html: els['docs-tbody'].innerHTML, sort: docSort })
 """
 
 
-def _run_doc_render(html, payload):
+def _run_doc_render(payload):
     """Малює таблицю документів справжнім JS сторінки в node і повертає розмітку тіла."""
-    page = html.split("<script>", 1)[1].split("</script>", 1)[0]
+    page = "\n".join(JS.values())
     with tempfile.TemporaryDirectory() as tmp:
         script = os.path.join(tmp, "doc_dup.js")
         payload_path = os.path.join(tmp, "payload.json")
@@ -2317,133 +2138,100 @@ DOC_DUP_DOCS = [
 ]
 
 
-@pytest.mark.asyncio
 @pytest.mark.skipif(NODE is None, reason="node недоступний — JS сторінки не виконати")
-async def test_duplicate_document_numbers_are_highlighted_with_a_twin_tooltip(warehouse_env):
+def test_duplicate_document_numbers_are_highlighted_with_a_twin_tooltip():
     """#26: однаковий нормалізований номер підсвічує клітинку й показує, скільки ще двійників."""
-    client, db, html = await _documents_page(warehouse_env)
-    try:
-        rows = _rendered_doc_rows(_run_doc_render(html, {"docs": DOC_DUP_DOCS}))
+    rows = _rendered_doc_rows(_run_doc_render({"docs": DOC_DUP_DOCS}))
 
-        for doc_id in (1, 2, 3):
-            assert "doc-dup" in rows[doc_id]["cell_class"], doc_id
-            assert "fa-clone" in rows[doc_id]["cell"]
-            assert 'title="Такий самий номер ще в 2 документах"' in rows[doc_id]["cell"], doc_id
+    for doc_id in (1, 2, 3):
+        assert "doc-dup" in rows[doc_id]["cell_class"], doc_id
+        assert "fa-clone" in rows[doc_id]["cell"]
+        assert 'title="Такий самий номер ще в 2 документах"' in rows[doc_id]["cell"], doc_id
 
-        # підсвічується клітинка, а не рядок: клас рядка в усіх документах однаковий
-        for doc_id, row in rows.items():
-            assert "doc-dup" not in row["row_class"], doc_id
-            assert row["row_class"] == "hover:bg-slate-800/40 transition cursor-pointer"
+    # підсвічується клітинка, а не рядок: клас рядка в усіх документах однаковий
+    for doc_id, row in rows.items():
+        assert "doc-dup" not in row["row_class"], doc_id
+        assert row["row_class"] == "hover:bg-slate-800/40 transition cursor-pointer"
 
-        # порожній номер (і самотній, і в компанії іншого порожнього) — не дубль
-        for doc_id in (4, 5):
-            assert "doc-dup" not in rows[doc_id]["cell_class"], doc_id
-            assert "fa-clone" not in rows[doc_id]["cell"], doc_id
+    # порожній номер (і самотній, і в компанії іншого порожнього) — не дубль
+    for doc_id in (4, 5):
+        assert "doc-dup" not in rows[doc_id]["cell_class"], doc_id
+        assert "fa-clone" not in rows[doc_id]["cell"], doc_id
 
-        # «0002143» і «2143» — різні номери, як і одиничне «9»
-        for doc_id in (6, 7, 8):
-            assert "doc-dup" not in rows[doc_id]["cell_class"], doc_id
-            assert "fa-clone" not in rows[doc_id]["cell"], doc_id
-    finally:
-        await client.close()
-        db.close()
+    # «0002143» і «2143» — різні номери, як і одиничне «9»
+    for doc_id in (6, 7, 8):
+        assert "doc-dup" not in rows[doc_id]["cell_class"], doc_id
+        assert "fa-clone" not in rows[doc_id]["cell"], doc_id
 
 
-@pytest.mark.asyncio
 @pytest.mark.skipif(NODE is None, reason="node недоступний — JS сторінки не виконати")
-async def test_duplicate_highlight_does_not_depend_on_sorting(warehouse_env):
+def test_duplicate_highlight_does_not_depend_on_sorting():
     """#26: підсвічування працює незалежно від того, чи застосовано сортування."""
-    client, db, html = await _documents_page(warehouse_env)
-    try:
-        def highlighted(sort):
-            rows = _rendered_doc_rows(_run_doc_render(html, {"docs": DOC_DUP_DOCS, "sort": sort}))
-            order = list(rows)
-            return order, {d: ("doc-dup" in r["cell_class"], r["cell"]) for d, r in rows.items()}
+    def highlighted(sort):
+        rows = _rendered_doc_rows(_run_doc_render({"docs": DOC_DUP_DOCS, "sort": sort}))
+        order = list(rows)
+        return order, {d: ("doc-dup" in r["cell_class"], r["cell"]) for d, r in rows.items()}
 
-        default_order, default_marks = highlighted({"key": None, "dir": None})
-        asc_order, asc_marks = highlighted({"key": "doc_number", "dir": "asc"})
-        desc_order, desc_marks = highlighted({"key": "doc_number", "dir": "desc"})
+    default_order, default_marks = highlighted({"key": None, "dir": None})
+    asc_order, asc_marks = highlighted({"key": "doc_number", "dir": "asc"})
+    desc_order, desc_marks = highlighted({"key": "doc_number", "dir": "desc"})
 
-        # порядок рядків різний — а підсвічування те саме;
-        # порожні номери лишаються в кінці в обох напрямках
-        assert default_order == [1, 2, 3, 4, 5, 6, 7, 8]
-        assert asc_order == [8, 1, 2, 3, 6, 7, 4, 5]
-        assert desc_order == [6, 7, 1, 2, 3, 8, 4, 5]
-        assert asc_marks == default_marks
-        assert desc_marks == default_marks
-    finally:
-        await client.close()
-        db.close()
+    # порядок рядків різний — а підсвічування те саме;
+    # порожні номери лишаються в кінці в обох напрямках
+    assert default_order == [1, 2, 3, 4, 5, 6, 7, 8]
+    assert asc_order == [8, 1, 2, 3, 6, 7, 4, 5]
+    assert desc_order == [6, 7, 1, 2, 3, 8, 4, 5]
+    assert asc_marks == default_marks
+    assert desc_marks == default_marks
 
 
-@pytest.mark.asyncio
 @pytest.mark.skipif(NODE is None, reason="node недоступний — JS сторінки не виконати")
-async def test_duplicate_count_covers_the_whole_list_not_the_filtered_one(warehouse_env):
+def test_duplicate_count_covers_the_whole_list_not_the_filtered_one():
     """#26: двійники рахуються по всьому завантаженому списку, а не по показаному."""
-    client, db, html = await _documents_page(warehouse_env)
-    try:
-        # показано лише один документ із трійці — підказка все одно про двох двійників
-        rows = _rendered_doc_rows(_run_doc_render(html, {"docs": DOC_DUP_DOCS, "shown": [2]}))
-        assert list(rows) == [2]
-        assert "doc-dup" in rows[2]["cell_class"]
-        assert 'title="Такий самий номер ще в 2 документах"' in rows[2]["cell"]
+    # показано лише один документ із трійці — підказка все одно про двох двійників
+    rows = _rendered_doc_rows(_run_doc_render({"docs": DOC_DUP_DOCS, "shown": [2]}))
+    assert list(rows) == [2]
+    assert "doc-dup" in rows[2]["cell_class"]
+    assert 'title="Такий самий номер ще в 2 документах"' in rows[2]["cell"]
 
-        # єдиний показаний документ без двійників лишається не підсвіченим
-        lonely = _rendered_doc_rows(_run_doc_render(html, {"docs": DOC_DUP_DOCS, "shown": [8]}))
-        assert "doc-dup" not in lonely[8]["cell_class"]
-    finally:
-        await client.close()
-        db.close()
+    # єдиний показаний документ без двійників лишається не підсвіченим
+    lonely = _rendered_doc_rows(_run_doc_render({"docs": DOC_DUP_DOCS, "shown": [8]}))
+    assert "doc-dup" not in lonely[8]["cell_class"]
 
 
-@pytest.mark.asyncio
-async def test_doc_number_normalisation_is_shared_with_sorting(warehouse_env):
+def test_doc_number_normalisation_is_shared_with_sorting():
     """#26: ключ порівняння номера один — і для сортування, і для пошуку дублів."""
-    client, db, html = await _documents_page(warehouse_env)
-    try:
-        assert html.count(DOC_DUP_KEY_HELPER) == 1
+    assert PAGE.count(DOC_DUP_KEY_HELPER) == 1
 
-        key_helper = html.split(DOC_DUP_KEY_HELPER)[1].split("\n}")[0]
-        assert r".replace(/[\s№n]/gi, '').toLowerCase()" in key_helper
+    key_helper = JS["document_sort"]
+    assert r".replace(/[\s№n]/gi, '').toLowerCase()" in key_helper
 
-        # сортування номера йде через той самий ключ
-        assert "compareDocNumbers(a, b)" in html
-        assert "compareNumericValues(normalizeDocNumber(a), normalizeDocNumber(b))" in html
-        assert "doc_number:        { get: d => d.doc_number,            compare: compareDocNumbers }" in html
+    # сортування номера йде через той самий ключ
+    assert "compareDocNumbers(a, b)" in key_helper
+    assert "compareNumericValues(normalizeDocNumber(a), normalizeDocNumber(b))" in key_helper
+    assert "doc_number:        { get: d => d.doc_number,            compare: compareDocNumbers }" in key_helper
 
-        # пошук дублів — теж через нього, і саме по allDocs
-        dup_block = html.split("function docNumberTwinCounts()")[1].split("\n}")[0]
-        assert "normalizeDocNumber(d.doc_number)" in dup_block
-        assert "allDocs.forEach" in dup_block
-        assert "if (!key) return;" in dup_block
-    finally:
-        await client.close()
-        db.close()
+    # пошук дублів — теж через нього, і саме по allDocs
+    dup_block = JS["document_marks"]
+    assert "normalizeDocNumber(d.doc_number)" in dup_block
+    assert "allDocs.forEach" in dup_block
+    assert "if (!key) return;" in dup_block
 
 
-@pytest.mark.asyncio
-async def test_duplicate_highlight_touches_only_the_documents_table(warehouse_env):
+def test_duplicate_highlight_touches_only_the_documents_table():
     """#26: у вкладці «Склад» дублі не підсвічуються."""
-    client, db, html = await _documents_page(warehouse_env)
-    try:
-        render_items = html.split("function renderItems(items)")[1].split("tbody.innerHTML = html;")[0]
-        assert "doc-dup" not in render_items
+    render_items = JS["items_table"]
+    assert "doc-dup" not in render_items
 
-        render_docs = html.split("function renderDocs(docs)")[1].split("tbody.innerHTML = html;")[0]
-        assert "doc-dup" in render_docs
+    render_docs = JS["documents_render"]
+    assert "doc-dup" in render_docs
 
-        # стиль підсвітки оголошено один раз — фіолетовим, як badge-emb
-        assert html.count(".doc-dup {") == 1
-        assert ".doc-dup { background: rgba(168,85,247,0.15); color: #d8b4fe; }" in html
-    finally:
-        await client.close()
-        db.close()
+    # стиль підсвітки оголошено один раз — фіолетовим, як badge-emb
+    assert PAGE.count(".doc-dup {") == 1
+    assert ".doc-dup { background: rgba(168,85,247,0.15); color: #d8b4fe; }" in PAGE
 
 
 # ---- Слайс #29: мітка «не в обліку» та її фільтр у вкладці «Документи» ----
-
-DOC_UNACCOUNTED_BLOCK_START = "// ---- Мітка «Не в обліку» та її фільтр (#29) ----"
-DOC_UNACCOUNTED_BLOCK_END = "// ---- Кінець фільтра «Не в обліку» (#29) ----"
 
 # Назви обовʼязкових полів беруться з єдиного джерела — REQUIRED_DOC_FIELDS.
 # Фронтенд їх не перелічує: готовий перелік приходить у missing_fields.
@@ -2542,9 +2330,9 @@ _DOC_UNACCOUNTED_DRIVER = """
 """
 
 
-def _run_doc_unaccounted(html, payload):
+def _run_doc_unaccounted(payload):
     """Проганяє сторінку в node: мітку рядка, фільтр і картку розгортання."""
-    page = html.split("<script>", 1)[1].split("</script>", 1)[0]
+    page = "\n".join(JS.values())
     with tempfile.TemporaryDirectory() as tmp:
         script = os.path.join(tmp, "doc_unaccounted.js")
         payload_path = os.path.join(tmp, "payload.json")
@@ -2611,209 +2399,168 @@ DOC_UNACCOUNTED_CARDS = {
 DOC_UNACCOUNTED_WARNING = "Документ не в обліку. Не розпізнано: "
 
 
-@pytest.mark.asyncio
 @pytest.mark.skipif(NODE is None, reason="node недоступний — JS сторінки не виконати")
-async def test_unaccounted_document_gets_a_triangle_with_its_missing_fields(warehouse_env):
+def test_unaccounted_document_gets_a_triangle_with_its_missing_fields():
     """#29: жовтий трикутник у першій колонці, підказка перелічує саме не розпізнані поля."""
-    client, db, html = await _documents_page(warehouse_env)
-    try:
-        result = _run_doc_unaccounted(html, {"docs": DOC_UNACCOUNTED_DOCS, "cards": {},
-                                             "cardDocIds": []})
-        markup = result["initial"]["markup"]
+    result = _run_doc_unaccounted({"docs": DOC_UNACCOUNTED_DOCS, "cards": {}, "cardDocIds": []})
+    markup = result["initial"]["markup"]
 
-        # трикутник стоїть у першій колонці рядка — перед превʼю, файлом і рештою
-        row = _row_of(markup, 2)
-        assert "fa-triangle-exclamation" in _first_cell_of(markup, 2)
-        assert "text-amber-400" in _first_cell_of(markup, 2)
-        assert row.index("fa-triangle-exclamation") < row.index('data-label="Превʼю"')
+    # трикутник стоїть у першій колонці рядка — перед превʼю, файлом і рештою
+    row = _row_of(markup, 2)
+    assert "fa-triangle-exclamation" in _first_cell_of(markup, 2)
+    assert "text-amber-400" in _first_cell_of(markup, 2)
+    assert row.index("fa-triangle-exclamation") < row.index('data-label="Превʼю"')
 
-        # підказка перелічує рівно ті поля, яких бракує, у порядку REQUIRED_DOC_FIELDS
-        assert _mark_tooltip(markup, 2) == DOC_UNACCOUNTED_WARNING + "№ документа, Дата документа"
-        assert _mark_tooltip(markup, 3) == DOC_UNACCOUNTED_WARNING + ", ".join(DOC_REQUIRED_LABELS)
+    # підказка перелічує рівно ті поля, яких бракує, у порядку REQUIRED_DOC_FIELDS
+    assert _mark_tooltip(markup, 2) == DOC_UNACCOUNTED_WARNING + "№ документа, Дата документа"
+    assert _mark_tooltip(markup, 3) == DOC_UNACCOUNTED_WARNING + ", ".join(DOC_REQUIRED_LABELS)
 
-        # повністю розпізнаний документ мітки не має
-        assert "fa-triangle-exclamation" not in _first_cell_of(markup, 1)
-        assert result["initial"]["marks"]["1"] == ""
+    # повністю розпізнаний документ мітки не має
+    assert "fa-triangle-exclamation" not in _first_cell_of(markup, 1)
+    assert result["initial"]["marks"]["1"] == ""
 
-        # excel і системний ручний документ під правило не підпадають
-        for doc_id in (8, 9):
-            assert "fa-triangle-exclamation" not in _first_cell_of(markup, doc_id), doc_id
-            assert result["initial"]["marks"][str(doc_id)] == "", doc_id
-    finally:
-        await client.close()
-        db.close()
+    # excel і системний ручний документ під правило не підпадають
+    for doc_id in (8, 9):
+        assert "fa-triangle-exclamation" not in _first_cell_of(markup, doc_id), doc_id
+        assert result["initial"]["marks"][str(doc_id)] == "", doc_id
 
 
 MANUAL_EDIT_SPAN = '<span class="text-amber-400" title="Правка вручну">'
 
 
-@pytest.mark.asyncio
 @pytest.mark.skipif(NODE is None, reason="node недоступний — JS сторінки не виконати")
-async def test_manual_edit_mark_stands_next_to_the_unaccounted_triangle(warehouse_env):
+def test_manual_edit_mark_stands_next_to_the_unaccounted_triangle():
     """Позначка ручного редагування живе в тій самій колонці, що й трикутник «не в обліку»."""
-    client, db, html = await _documents_page(warehouse_env)
-    try:
-        docs = [
-            # не в обліку і правлений вручну — обидві позначки поряд
-            dict(_unaccounted_doc(1, "а.pdf", ["Затребував"]), manual_edited=True),
-            # лише правлений вручну — трикутника немає, позначка на своєму місці
-            dict(_unaccounted_doc(2, "б.pdf", []), manual_edited=True),
-            # повністю розпізнаний і не правлений — колонка порожня
-            dict(_unaccounted_doc(3, "в.pdf", []), manual_edited=False),
-        ]
-        result = _run_doc_unaccounted(html, {"docs": docs, "cards": {}, "cardDocIds": []})
-        markup = result["initial"]["markup"]
+    docs = [
+        # не в обліку і правлений вручну — обидві позначки поряд
+        dict(_unaccounted_doc(1, "а.pdf", ["Затребував"]), manual_edited=True),
+        # лише правлений вручну — трикутника немає, позначка на своєму місці
+        dict(_unaccounted_doc(2, "б.pdf", []), manual_edited=True),
+        # повністю розпізнаний і не правлений — колонка порожня
+        dict(_unaccounted_doc(3, "в.pdf", []), manual_edited=False),
+    ]
+    result = _run_doc_unaccounted({"docs": docs, "cards": {}, "cardDocIds": []})
+    markup = result["initial"]["markup"]
 
-        assert result["initial"]["marks"]["3"] == ""
+    assert result["initial"]["marks"]["3"] == ""
 
-        # обидві позначки — у першій колонці, трикутник перед олівцем і без нічого між ними
-        both = result["initial"]["marks"]["1"]
-        assert "fa-triangle-exclamation" in both
-        assert "fa-pen" in both
-        assert both.index("fa-triangle-exclamation") < both.index("fa-pen")
-        triangle_end = both.index("</span>") + len("</span>")
-        assert both[triangle_end:both.index(MANUAL_EDIT_SPAN)].strip() == ""
+    # обидві позначки — у першій колонці, трикутник перед олівцем і без нічого між ними
+    both = result["initial"]["marks"]["1"]
+    assert "fa-triangle-exclamation" in both
+    assert "fa-pen" in both
+    assert both.index("fa-triangle-exclamation") < both.index("fa-pen")
+    triangle_end = both.index("</span>") + len("</span>")
+    assert both[triangle_end:both.index(MANUAL_EDIT_SPAN)].strip() == ""
 
-        # самотня позначка правки не тягне за собою трикутник
-        alone = result["initial"]["marks"]["2"]
-        assert MANUAL_EDIT_SPAN in alone
-        assert "fa-triangle-exclamation" not in alone
+    # самотня позначка правки не тягне за собою трикутник
+    alone = result["initial"]["marks"]["2"]
+    assert MANUAL_EDIT_SPAN in alone
+    assert "fa-triangle-exclamation" not in alone
 
-        # у колонці «Файл» позначки більше немає
-        assert MANUAL_EDIT_SPAN not in _row_of(markup, 1).split('data-label="Файл"')[1].split("</td>")[0]
-    finally:
-        await client.close()
-        db.close()
+    # у колонці «Файл» позначки більше немає
+    assert MANUAL_EDIT_SPAN not in _row_of(markup, 1).split('data-label="Файл"')[1].split("</td>")[0]
 
 
-@pytest.mark.asyncio
 @pytest.mark.skipif(NODE is None, reason="node недоступний — JS сторінки не виконати")
-async def test_unaccounted_mark_ignores_sorting_and_counts_the_whole_list(warehouse_env):
+def test_unaccounted_mark_ignores_sorting_and_counts_the_whole_list():
     """#29: мітка не залежить від сортування, а лічильник рахує весь завантажений список."""
-    client, db, html = await _documents_page(warehouse_env)
-    try:
-        payload = {"docs": DOC_UNACCOUNTED_DOCS, "cards": {}, "cardDocIds": []}
-        result = _run_doc_unaccounted(html, payload)
-        default_marks = result["initial"]["marks"]
+    payload = {"docs": DOC_UNACCOUNTED_DOCS, "cards": {}, "cardDocIds": []}
+    result = _run_doc_unaccounted(payload)
+    default_marks = result["initial"]["marks"]
 
-        # лічильник показує всі необліковані документи — двох
-        assert str(result["initial"]["count"]) == "2"
+    # лічильник показує всі необліковані документи — двох
+    assert str(result["initial"]["count"]) == "2"
 
-        # порядок рядків змінюється, мітки лишаються ті самі
-        result = _run_doc_unaccounted(html, {**payload, "sort": {"key": "filename", "dir": "asc"}})
-        assert result["initial"]["ids"] != [1, 2, 3, 8, 9]
-        assert result["initial"]["marks"] == default_marks
-        assert str(result["initial"]["count"]) == "2"
-    finally:
-        await client.close()
-        db.close()
+    # порядок рядків змінюється, мітки лишаються ті самі
+    result = _run_doc_unaccounted({**payload, "sort": {"key": "filename", "dir": "asc"}})
+    assert result["initial"]["ids"] != [1, 2, 3, 8, 9]
+    assert result["initial"]["marks"] == default_marks
+    assert str(result["initial"]["count"]) == "2"
 
 
-@pytest.mark.asyncio
 @pytest.mark.skipif(NODE is None, reason="node недоступний — JS сторінки не виконати")
-async def test_unaccounted_filter_hides_accounted_rows_and_composes_with_sorting(warehouse_env):
+def test_unaccounted_filter_hides_accounted_rows_and_composes_with_sorting():
     """#29: фільтр лишає тільки необліковані, переживає автооновлення, а сортує вже його результат."""
-    client, db, html = await _documents_page(warehouse_env)
-    try:
-        result = _run_doc_unaccounted(html, {"docs": DOC_UNACCOUNTED_DOCS, "cards": {},
-                                             "cardDocIds": []})
+    result = _run_doc_unaccounted({"docs": DOC_UNACCOUNTED_DOCS, "cards": {},
+                                   "cardDocIds": []})
 
-        assert result["initial"]["ids"] == [1, 2, 3, 8, 9]
-        assert result["initial"]["active"] is False
+    assert result["initial"]["ids"] == [1, 2, 3, 8, 9]
+    assert result["initial"]["active"] is False
 
-        # увімкнений фільтр лишає тільки документи з не розпізнаними полями
-        assert result["filtered"]["ids"] == [2, 3]
-        assert result["filtered"]["active"] is True
-        # лічильник і далі рахує весь список, а не показані рядки
-        assert str(result["filtered"]["count"]) == "2"
+    # увімкнений фільтр лишає тільки документи з не розпізнаними полями
+    assert result["filtered"]["ids"] == [2, 3]
+    assert result["filtered"]["active"] is True
+    # лічильник і далі рахує весь список, а не показані рядки
+    assert str(result["filtered"]["count"]) == "2"
 
-        # автооновлення не скидає ні фільтр, ні його результат
-        assert result["refreshed"]["ids"] == [2, 3]
-        assert result["refreshed"]["active"] is True
+    # автооновлення не скидає ні фільтр, ні його результат
+    assert result["refreshed"]["ids"] == [2, 3]
+    assert result["refreshed"]["active"] is True
 
-        # сортування застосовується вже до відфільтрованого списку: «б.pdf» перед «я.pdf»
-        assert result["sorted"]["ids"] == [3, 2]
+    # сортування застосовується вже до відфільтрованого списку: «б.pdf» перед «я.pdf»
+    assert result["sorted"]["ids"] == [3, 2]
 
-        # повторний клік знімає фільтр — весь список повертається
-        assert sorted(result["cleared"]["ids"]) == [1, 2, 3, 8, 9]
-        assert result["cleared"]["active"] is False
-    finally:
-        await client.close()
-        db.close()
+    # повторний клік знімає фільтр — весь список повертається
+    assert sorted(result["cleared"]["ids"]) == [1, 2, 3, 8, 9]
+    assert result["cleared"]["active"] is False
 
 
-@pytest.mark.asyncio
 @pytest.mark.skipif(NODE is None, reason="node недоступний — JS сторінки не виконати")
-async def test_expanded_card_repeats_the_warning_with_the_same_missing_fields(warehouse_env):
+def test_expanded_card_repeats_the_warning_with_the_same_missing_fields():
     """#29: у розгорнутій картці — той самий перелік, що й у підказці мітки."""
-    client, db, html = await _documents_page(warehouse_env)
-    try:
-        cards = _run_doc_unaccounted(html, {"docs": DOC_UNACCOUNTED_DOCS,
-                                            "cards": DOC_UNACCOUNTED_CARDS,
-                                            "cardDocIds": [2, 9]})["cards"]
+    cards = _run_doc_unaccounted({"docs": DOC_UNACCOUNTED_DOCS,
+                                  "cards": DOC_UNACCOUNTED_CARDS,
+                                  "cardDocIds": [2, 9]})["cards"]
 
-        assert DOC_UNACCOUNTED_WARNING + "№ документа, Дата документа" in cards["2"]
-        assert "fa-triangle-exclamation" in cards["2"]
+    assert DOC_UNACCOUNTED_WARNING + "№ документа, Дата документа" in cards["2"]
+    assert "fa-triangle-exclamation" in cards["2"]
 
-        # системний документ ручних коригувань попередження не отримує
-        assert DOC_UNACCOUNTED_WARNING not in cards["9"]
-    finally:
-        await client.close()
-        db.close()
+    # системний документ ручних коригувань попередження не отримує
+    assert DOC_UNACCOUNTED_WARNING not in cards["9"]
 
 
-@pytest.mark.asyncio
-async def test_unaccounted_filter_button_follows_the_warehouse_filter_pattern(warehouse_env):
+def test_unaccounted_filter_button_follows_the_warehouse_filter_pattern():
     """#29: кнопка фільтра — та сама розмітка й той самий стан, що й у вкладці «Склад»."""
-    client, db, html = await _documents_page(warehouse_env)
-    try:
-        assert "let docFilter = '';" in html
-        assert "function setDocFilter(filter)" in html
-        assert "function updateDocFilterUI()" in html
-        assert "function filterDocs()" in html
+    assert "let docFilter = '';" in PAGE
+    assert "function setDocFilter(filter)" in PAGE
+    assert "function updateDocFilterUI()" in PAGE
+    assert "function filterDocs()" in PAGE
 
-        # кнопка з лічильником — у рядку фільтрів вкладки «Документи», за зразком «Складу»
-        documents_panel = html.split('id="panel-documents"')[1].split("</main>")[0]
-        assert 'onclick="setDocFilter(\'not-accounted\')"' in documents_panel
-        assert 'id="filter-not-accounted"' in documents_panel
-        assert 'id="filter-not-accounted-count"' in documents_panel
-        assert "fa-triangle-exclamation text-amber-400" in documents_panel
-        assert "bg-blue-600/30" in html.split("function updateDocFilterUI()")[1]
+    # кнопка з лічильником — у рядку фільтрів вкладки «Документи», за зразком «Складу»
+    documents_panel = PAGE.split('id="panel-documents"')[1].split("</main>")[0]
+    assert 'onclick="setDocFilter(\'not-accounted\')"' in documents_panel
+    assert 'id="filter-not-accounted"' in documents_panel
+    assert 'id="filter-not-accounted-count"' in documents_panel
+    assert "fa-triangle-exclamation text-amber-400" in documents_panel
+    assert "bg-blue-600/30" in JS["document_marks"]
 
-        # фільтр застосовується при кожному рендері — саме так його бачить автооновлення
-        fetch_docs = html.split("async function fetchDocs()")[1].split("checkSmartPolling();")[0]
-        assert "filterDocs();" in fetch_docs
-        assert "renderDocs(allDocs);" not in fetch_docs
+    # фільтр застосовується при кожному рендері — саме так його бачить автооновлення
+    fetch_docs = JS["document_status"]
+    assert "filterDocs();" in fetch_docs
+    assert "renderDocs(allDocs);" not in fetch_docs
 
-        # фільтри «Складу» не змінені
-        assert "['below-min', 'negative', 'no-docs', 'dup-names', 'zeros']" in html
-    finally:
-        await client.close()
-        db.close()
+    # фільтри «Складу» не змінені
+    assert "['below-min', 'negative', 'no-docs', 'dup-names', 'zeros']" in PAGE
 
 
-@pytest.mark.asyncio
-async def test_unaccounted_rule_is_not_duplicated_in_the_frontend(warehouse_env):
+def test_unaccounted_rule_is_not_duplicated_in_the_frontend():
     """#29: перелік полів рахує бекенд — фронтенд лише показує готовий missing_fields."""
-    client, db, html = await _documents_page(warehouse_env)
-    try:
-        block = html.split(DOC_UNACCOUNTED_BLOCK_START, 1)[1].split(DOC_UNACCOUNTED_BLOCK_END, 1)[0]
-        assert "doc.missing_fields" in block
-        assert "allDocs.filter(isDocUnaccounted)" in block
+    # Підказка (renderDocLegend) — довідкова панель: цитує позначки прикладами,
+    # але облік не вирішує, тож у перевірці на дублювання переліку її немає.
+    block = JS["document_marks"].split("function renderDocLegend", 1)[0]
+    assert "doc.missing_fields" in block
+    assert "allDocs.filter(isDocUnaccounted)" in block
 
-        # жодної другої копії переліку обовʼязкових полів
-        for label in DOC_REQUIRED_LABELS:
-            assert label not in block, label
+    # жодної другої копії переліку обовʼязкових полів
+    for label in DOC_REQUIRED_LABELS:
+        assert label not in block, label
 
-        # мітка рядка й попередження в картці теж беруть готовий перелік
-        render_docs = html.split("function renderDocs(docs)")[1].split("tbody.innerHTML = html;")[0]
-        assert "const missingFields = doc.missing_fields || [];" in render_docs
-        card = html.split("async function reloadDocImpact(docId)")[1].split("// OCR Text Box")[0]
-        assert "const missingFields = data.missing_fields || [];" in card
-        assert "Документ не в обліку. Не розпізнано: " in card
-    finally:
-        await client.close()
-        db.close()
+    # мітка рядка й попередження в картці теж беруть готовий перелік
+    render_docs = JS["documents_render"]
+    assert "const missingFields = doc.missing_fields || [];" in render_docs
+    card = JS["document_impact"]
+    assert "const missingFields = data.missing_fields || [];" in card
+    assert "Документ не в обліку. Не розпізнано: " in card
 
 
 @pytest.mark.asyncio
@@ -2851,8 +2598,6 @@ async def test_document_ocr_endpoint_exposes_the_missing_fields_from_the_shared_
 # =========================================================================
 
 # Історію малює єдина функція — поза нею неврахованих міток бути не має.
-TX_HISTORY_BLOCK_START = "async function reloadTransactions(itemId)"
-TX_HISTORY_BLOCK_END = "function toggleTransactions"
 
 # Приглушення рядка і прочерк замість числа, якого немає в залишку позиції.
 TX_ROW_DIM = "opacity-60"
@@ -2895,9 +2640,9 @@ _TX_HISTORY_DRIVER = """
 """
 
 
-def _run_tx_history(html, payload):
+def _run_tx_history(payload):
     """Проганяє сторінку в node: історію транзакцій малює справжній JS сторінки."""
-    page = html.split("<script>", 1)[1].split("</script>", 1)[0]
+    page = "\n".join(JS.values())
     with tempfile.TemporaryDirectory() as tmp:
         script = os.path.join(tmp, "tx_history.js")
         payload_path = os.path.join(tmp, "payload.json")
@@ -2980,12 +2725,13 @@ async def _history_payload(client, item_id):
 @pytest.mark.skipif(NODE is None, reason="node недоступний — JS сторінки не виконати")
 async def test_unaccounted_row_in_the_history_is_dimmed_with_a_triangle_and_a_dash(warehouse_env):
     """#30: неврахований рядок приглушено; у «Документі» — жовтий трикутник, у «Залишку» — прочерк."""
-    client, db, html = await _documents_page(warehouse_env)
+    db, fs, vs = warehouse_env
+    client = await _web_client(warehouse_env)
     try:
         item_id, _ = _item_with_an_unaccounted_document(db)
         payload = await _history_payload(client, item_id)
         assert [tx["accounted"] for tx in payload["txs"]] == [True, False, True]
-        markup = _run_tx_history(html, payload)
+        markup = _run_tx_history(payload)
 
         unaccounted = _history_row_of(markup, "vymoha_215.jpg")
         accounted = _history_row_of(markup, "nakladna_101.jpg")
@@ -3016,11 +2762,12 @@ async def test_unaccounted_row_in_the_history_is_dimmed_with_a_triangle_and_a_da
 @pytest.mark.skipif(NODE is None, reason="node недоступний — JS сторінки не виконати")
 async def test_unaccounted_row_stays_in_the_history(warehouse_env):
     """#30: неврахований рядок не ховається — інакше незрозуміло, куди поділася кількість."""
-    client, db, html = await _documents_page(warehouse_env)
+    db, fs, vs = warehouse_env
+    client = await _web_client(warehouse_env)
     try:
         item_id, _ = _item_with_an_unaccounted_document(db)
         payload = await _history_payload(client, item_id)
-        markup = _run_tx_history(html, payload)
+        markup = _run_tx_history(payload)
 
         # усі три рядки на місці, у порядку створення транзакцій
         rows = _history_rows(markup)
@@ -3043,7 +2790,8 @@ async def test_unaccounted_row_stays_in_the_history(warehouse_env):
 @pytest.mark.skipif(NODE is None, reason="node недоступний — JS сторінки не виконати")
 async def test_history_balance_matches_the_item_header(warehouse_env):
     """#30: накопичувальний залишок історії збігається із залишком у шапці — двох залишків на екрані немає."""
-    client, db, html = await _documents_page(warehouse_env)
+    db, fs, vs = warehouse_env
+    client = await _web_client(warehouse_env)
     try:
         item_id, _ = _item_with_an_unaccounted_document(db)
         payload = await _history_payload(client, item_id)
@@ -3051,7 +2799,7 @@ async def test_history_balance_matches_the_item_header(warehouse_env):
         assert balance == 70.0                       # невраховані 50 у залишок не входять
         assert payload["txs"][-1]["running_balance"] == balance
 
-        markup = _run_tx_history(html, payload)
+        markup = _run_tx_history(payload)
 
         # шапка розгорнутої історії показує рівно залишок позиції
         header = markup.split("Поточний залишок:")[1].split("</div>")[0]
@@ -3065,39 +2813,34 @@ async def test_history_balance_matches_the_item_header(warehouse_env):
         db.close()
 
 
-@pytest.mark.asyncio
-async def test_the_unaccounted_mark_in_the_history_comes_from_the_backend(warehouse_env):
+def test_the_unaccounted_mark_in_the_history_comes_from_the_backend():
     """#30: приглушення й трикутник спираються на готові accounted і missing_fields."""
-    client, db, html = await _documents_page(warehouse_env)
-    try:
-        block = html.split(TX_HISTORY_BLOCK_START, 1)[1].split(TX_HISTORY_BLOCK_END, 1)[0]
-        assert "tx.accounted === false" in block
-        assert "tx.missing_fields" in block
-        # підказка сформульована тими самими словами, що й у вкладці «Документи»
-        assert DOC_UNACCOUNTED_WARNING in block
+    block = JS["item_transactions"]
+    assert "tx.accounted === false" in block
+    assert "tx.missing_fields" in block
+    # підказка сформульована тими самими словами, що й у вкладці «Документи»
+    assert DOC_UNACCOUNTED_WARNING in block
 
-        # перелік полів не переказано у фронтенді: причину показує готовий missing_fields
-        assert "missingFields.join(', ')" in block
-        for label in DOC_REQUIRED_LABELS:
-            assert f"'{label}'" not in block, label
-        assert "file_type IN" not in block
-    finally:
-        await client.close()
-        db.close()
+    # перелік полів не переказано у фронтенді: причину показує готовий missing_fields
+    assert "missingFields.join(', ')" in block
+    for label in DOC_REQUIRED_LABELS:
+        assert f"'{label}'" not in block, label
+    assert "file_type IN" not in block
 
 
 @pytest.mark.asyncio
 @pytest.mark.skipif(NODE is None, reason="node недоступний — JS сторінки не виконати")
 async def test_item_row_and_manual_correction_row_get_no_unaccounted_marks(warehouse_env):
     """#30: приглушення й трикутник — лише в історії; рядок позиції та системний документ їх не мають."""
-    client, db, html = await _documents_page(warehouse_env)
-    try:
-        # рядок позиції складу не отримує нічого нового: його єдиний трикутник — «нижче мінімуму»
-        render_items = html.split("function renderItems(items)")[1].split("tbody.innerHTML = html;")[0]
-        assert "не в обліку" not in render_items
-        assert TX_ROW_DIM not in render_items
-        assert "Залишок менше мінімального!" in render_items
+    db, fs, vs = warehouse_env
+    # рядок позиції складу не отримує нічого нового: його єдиний трикутник — «нижче мінімуму»
+    render_items = JS["items_table"]
+    assert "не в обліку" not in render_items
+    assert TX_ROW_DIM not in render_items
+    assert "Залишок менше мінімального!" in render_items
 
+    client = await _web_client(warehouse_env)
+    try:
         item_id, unaccounted_doc = _item_with_an_unaccounted_document(db)
         # правка поля робить неврахований документ ручним, не повертаючи його в облік
         db.edit_document_field(unaccounted_doc, "requested_via", "7939 - (ПІБ)")
@@ -3106,7 +2849,7 @@ async def test_item_row_and_manual_correction_row_get_no_unaccounted_marks(wareh
                            operation_type="income", quantity=5.0)
 
         payload = await _history_payload(client, item_id)
-        markup = _run_tx_history(html, payload)
+        markup = _run_tx_history(payload)
 
         # системний документ ручних коригувань під правило обліку не підпадає
         manual_row = _history_row_of(markup, "Ручне редагування (Користувач)")
@@ -3129,17 +2872,12 @@ async def test_item_row_and_manual_correction_row_get_no_unaccounted_marks(wareh
 
 DELETE_MODAL_COMMENT = "<!-- Delete Confirmation Modal -->"
 RETRY_MODAL_COMMENT = "<!-- Repeat Confirmation Modal -->"
-RETRY_BLOCK_START = "// ---- Repeat ----"
 
 
 def _modal_classes(html, comment):
     """Класи обгортки й картки вікна: [фон, картка]."""
     parts = html.split(comment, 1)[1].split('class="')
     return [parts[1].split('"', 1)[0], parts[2].split('"', 1)[0]]
-
-
-def _retry_block(html):
-    return html.split(RETRY_BLOCK_START, 1)[1].split("async function fetchDocs", 1)[0]
 
 
 # Клік по «Повторити» виконується справжнім JS сторінки; запити лише збираються.
@@ -3204,9 +2942,9 @@ _DOC_REPEAT_DRIVER = """
 _REPEAT_DOC = {"id": 7, "filename": "nakladna_101.jpg", "manual_edited": True}
 
 
-def _run_repeat(html, docs, mode="none"):
+def _run_repeat(docs, mode="none"):
     """Проганяє повтор у node: клік по кнопці, а далі — підтвердження, скасування або нічого."""
-    page = html.split("<script>", 1)[1].split("</script>", 1)[0]
+    page = "\n".join(JS.values())
     with tempfile.TemporaryDirectory() as tmp:
         script = os.path.join(tmp, "doc_repeat.js")
         payload_path = os.path.join(tmp, "payload.json")
@@ -3235,118 +2973,85 @@ def _rows_with_the_repeat_button(markup):
             if "doc-chevron-" in chunk and "retryDocument(" in chunk]
 
 
-@pytest.mark.asyncio
-async def test_repeat_warning_reuses_the_delete_confirmation_style(warehouse_env):
+def test_repeat_warning_reuses_the_delete_confirmation_style():
     """#33: попередження — така сама картка, як підтвердження видалення, а не діалог браузера."""
-    client, db, html = await _documents_page(warehouse_env)
-    try:
-        delete_overlay, delete_card = _modal_classes(html, DELETE_MODAL_COMMENT)
-        retry_overlay, retry_card = _modal_classes(html, RETRY_MODAL_COMMENT)
+    delete_overlay, delete_card = _modal_classes(PAGE, DELETE_MODAL_COMMENT)
+    retry_overlay, retry_card = _modal_classes(PAGE, RETRY_MODAL_COMMENT)
 
-        # та сама обгортка й та сама картка — відрізняється лише колір попередження
-        assert retry_overlay == delete_overlay
-        assert retry_card == delete_card.replace("red", "amber")
+    # та сама обгортка й та сама картка — відрізняється лише колір попередження
+    assert retry_overlay == delete_overlay
+    assert retry_card == delete_card.replace("red", "amber")
 
-        # усередині — назва файлу, «Скасувати» і підтвердження
-        modal = html.split(RETRY_MODAL_COMMENT, 1)[1].split("<!--", 1)[0]
-        assert modal.count("<button") == 2
-        assert 'id="retry-doc-name"' in modal
-        assert 'id="confirm-retry-btn"' in modal
-        assert "closeRetryModal()" in modal
-        assert "ручні правки буде втрачено" in modal
+    # усередині — назва файлу, «Скасувати» і підтвердження
+    modal = PAGE.split(RETRY_MODAL_COMMENT, 1)[1].split("<!--", 1)[0]
+    assert modal.count("<button") == 2
+    assert 'id="retry-doc-name"' in modal
+    assert 'id="confirm-retry-btn"' in modal
+    assert "closeRetryModal()" in modal
+    assert "ручні правки буде втрачено" in modal
 
-        # жодного системного діалогу браузера на шляху повтору
-        block = _retry_block(html)
-        assert "confirm(" not in block
-        assert "retryDocument" in block and "/retry" in block
-    finally:
-        await client.close()
-        db.close()
+    # жодного системного діалогу браузера на шляху повтору
+    block = JS["document_status"]
+    assert "confirm(" not in block
+    assert "retryDocument" in block and "/retry" in block
 
 
-@pytest.mark.asyncio
 @pytest.mark.skipif(NODE is None, reason="node недоступний — JS сторінки не виконати")
-async def test_repeat_of_a_manually_edited_document_warns_before_retrying(warehouse_env):
+def test_repeat_of_a_manually_edited_document_warns_before_retrying():
     """#33: документ із позначкою правки спершу питає, і лише підтвердження запускає повтор."""
-    client, db, html = await _documents_page(warehouse_env)
-    try:
-        retry_url = f"/api/warehouse/documents/{_REPEAT_DOC['id']}/retry"
-        result = _run_repeat(html, [_REPEAT_DOC], mode="confirm")
+    retry_url = f"/api/warehouse/documents/{_REPEAT_DOC['id']}/retry"
+    result = _run_repeat([_REPEAT_DOC], mode="confirm")
 
-        # клік по кнопці спиняється на попередженні з назвою файлу — повтору ще немає
-        assert result["afterClick"] == {
-            "modalOpen": True,
-            "name": _REPEAT_DOC["filename"],
-            "retries": [],
-        }
-        # підтвердження у вікні повторює документ і закриває вікно
-        assert result["afterConfirm"] == {"modalOpen": False, "name": _REPEAT_DOC["filename"],
-                                          "retries": [retry_url]}
-    finally:
-        await client.close()
-        db.close()
+    # клік по кнопці спиняється на попередженні з назвою файлу — повтору ще немає
+    assert result["afterClick"] == {
+        "modalOpen": True,
+        "name": _REPEAT_DOC["filename"],
+        "retries": [],
+    }
+    # підтвердження у вікні повторює документ і закриває вікно
+    assert result["afterConfirm"] == {"modalOpen": False, "name": _REPEAT_DOC["filename"],
+                                      "retries": [retry_url]}
 
 
-@pytest.mark.asyncio
 @pytest.mark.skipif(NODE is None, reason="node недоступний — JS сторінки не виконати")
-async def test_cancelling_the_repeat_warning_does_not_retry(warehouse_env):
+def test_cancelling_the_repeat_warning_does_not_retry():
     """#33: «Скасувати» закриває вікно й не чіпає документ."""
-    client, db, html = await _documents_page(warehouse_env)
-    try:
-        result = _run_repeat(html, [_REPEAT_DOC], mode="cancel")
+    result = _run_repeat([_REPEAT_DOC], mode="cancel")
 
-        assert result["afterClick"]["retries"] == []
-        assert result["afterCancel"]["modalOpen"] is False
-        assert result["afterCancel"]["retries"] == []
-    finally:
-        await client.close()
-        db.close()
+    assert result["afterClick"]["retries"] == []
+    assert result["afterCancel"]["modalOpen"] is False
+    assert result["afterCancel"]["retries"] == []
 
 
-@pytest.mark.asyncio
 @pytest.mark.skipif(NODE is None, reason="node недоступний — JS сторінки не виконати")
-async def test_repeat_without_manual_edits_goes_straight_through(warehouse_env):
+def test_repeat_without_manual_edits_goes_straight_through():
     """#33: без позначки правки вікна немає — кнопка повторює документ одразу."""
-    client, db, html = await _documents_page(warehouse_env)
-    try:
-        doc = dict(_REPEAT_DOC, manual_edited=False)
-        result = _run_repeat(html, [doc])
+    doc = dict(_REPEAT_DOC, manual_edited=False)
+    result = _run_repeat([doc])
 
-        assert result["afterClick"] == {
-            "modalOpen": False,
-            "name": "",
-            "retries": [f"/api/warehouse/documents/{doc['id']}/retry"],
-        }
-    finally:
-        await client.close()
-        db.close()
+    assert result["afterClick"] == {
+        "modalOpen": False,
+        "name": "",
+        "retries": [f"/api/warehouse/documents/{doc['id']}/retry"],
+    }
 
 
-@pytest.mark.asyncio
 @pytest.mark.skipif(NODE is None, reason="node недоступний — JS сторінки не виконати")
-async def test_repeat_button_stays_visible_only_for_error_documents(warehouse_env):
+def test_repeat_button_stays_visible_only_for_error_documents():
     """#33: обсяг кнопки «Повторити» не змінився — вона лишається лише для статусу «помилка»."""
-    client, db, html = await _documents_page(warehouse_env)
-    try:
-        docs = [
-            _repeat_doc(1, "completed", manual_edited=True),
-            _repeat_doc(2, "error", manual_edited=False),
-            _repeat_doc(3, "error", manual_edited=True),
-            _repeat_doc(4, "processing_ocr", manual_edited=True),
-            _repeat_doc(5, "queued", manual_edited=True),
-        ]
-        markup = _run_doc_render(html, {"docs": docs, "sort": {"key": None, "dir": None}})
+    docs = [
+        _repeat_doc(1, "completed", manual_edited=True),
+        _repeat_doc(2, "error", manual_edited=False),
+        _repeat_doc(3, "error", manual_edited=True),
+        _repeat_doc(4, "processing_ocr", manual_edited=True),
+        _repeat_doc(5, "queued", manual_edited=True),
+    ]
+    markup = _run_doc_render({"docs": docs, "sort": {"key": None, "dir": None}})
 
-        assert _rows_with_the_repeat_button(markup) == [2, 3]
-    finally:
-        await client.close()
-        db.close()
+    assert _rows_with_the_repeat_button(markup) == [2, 3]
 
 
 # ---- Підказка до позначок у вкладці «Документи» ----
-
-DOC_LEGEND_START = "// ---- Підказка до позначок таблиці ----"
-DOC_LEGEND_END = "// ---- Кінець підказки до позначок таблиці ----"
 
 # Перший документ — і «не в обліку» (бракує тієї самої дати, що й у прикладі підказки), і
 # ручна правка. Три документи з одним номером дають кожному з них двох двійників — рівно
@@ -3383,9 +3088,9 @@ _DOC_LEGEND_DRIVER = """
 """
 
 
-def _run_doc_legend(html, docs):
+def _run_doc_legend(docs):
     """Проганяє сторінку в node: підказка й рядки таблиці мають показати ті самі позначки."""
-    page = html.split("<script>", 1)[1].split("</script>", 1)[0]
+    page = "\n".join(JS.values())
     with tempfile.TemporaryDirectory() as tmp:
         script = os.path.join(tmp, "doc_legend.js")
         payload_path = os.path.join(tmp, "payload.json")
@@ -3399,64 +3104,52 @@ def _run_doc_legend(html, docs):
     return json.loads(proc.stdout)
 
 
-@pytest.mark.asyncio
-async def test_documents_tab_carries_a_collapsible_hint_above_the_table(warehouse_env):
+def test_documents_tab_carries_a_collapsible_hint_above_the_table():
     """Підказка — нативний <details> над таблицею: згортається, але лишається підписаною."""
-    client, db, html = await _documents_page(warehouse_env)
-    try:
-        panel = html.split('<main id="panel-documents"', 1)[1].split('id="docs-tbody"', 1)[0]
-        assert panel.index("doc-legend") < panel.index("<table")
+    panel = PAGE.split('<main id="panel-documents"', 1)[1].split('id="docs-tbody"', 1)[0]
+    assert panel.index("doc-legend") < panel.index("<table")
 
-        # єдиний розгортуваний блок на вкладці, розгорнутий за замовчуванням
-        assert panel.count("<details") == 1
-        assert 'class="glass rounded-2xl mb-6 doc-legend" open' in panel
+    # єдиний розгортуваний блок на вкладці, розгорнутий за замовчуванням
+    assert panel.count("<details") == 1
+    assert 'class="glass rounded-2xl mb-6 doc-legend" open' in panel
 
-        legend = panel.split("<details", 1)[1].split("</details>", 1)[0]
-        assert legend.count("<summary") == 1
-        # згорнутий блок усе одно читається як пояснення: заголовок лишається на екрані
-        summary = legend.split("<summary", 1)[1].split("</summary>", 1)[0]
-        assert "fa-circle-info" in summary
-        assert "Підказка" in summary
-        assert "позначки в таблиці" in summary
+    legend = panel.split("<details", 1)[1].split("</details>", 1)[0]
+    assert legend.count("<summary") == 1
+    # згорнутий блок усе одно читається як пояснення: заголовок лишається на екрані
+    summary = legend.split("<summary", 1)[1].split("</summary>", 1)[0]
+    assert "fa-circle-info" in summary
+    assert "Підказка" in summary
+    assert "позначки в таблиці" in summary
 
-        # тіло наповнює сторінка, а системний маркер <summary> прибирає CSS
-        assert 'id="doc-legend-body"' in legend
-        assert ".doc-legend > summary { list-style: none; }" in html
-        assert ".doc-legend > summary::-webkit-details-marker { display: none; }" in html
-        assert ".doc-legend[open] .doc-legend-arrow { transform: rotate(180deg); }" in html
+    # тіло наповнює сторінка, а системний маркер <summary> прибирає CSS
+    assert 'id="doc-legend-body"' in legend
+    assert ".doc-legend > summary { list-style: none; }" in PAGE
+    assert ".doc-legend > summary::-webkit-details-marker { display: none; }" in PAGE
+    assert ".doc-legend[open] .doc-legend-arrow { transform: rotate(180deg); }" in PAGE
 
-        # малюється один раз, на ініціалізації, а не при кожному оновленні списку
-        assert "renderDocLegend();" in html.split("document.addEventListener('DOMContentLoaded'", 1)[1]
-        assert html.count("function renderDocLegend(") == 1
-    finally:
-        await client.close()
-        db.close()
+    # малюється один раз, на ініціалізації, а не при кожному оновленні списку
+    assert "renderDocLegend();" in PAGE.split("document.addEventListener('DOMContentLoaded'", 1)[1]
+    assert PAGE.count("function renderDocLegend(") == 1
 
 
-@pytest.mark.asyncio
 @pytest.mark.skipif(NODE is None, reason="node недоступний — JS сторінки не виконати")
-async def test_documents_hint_repeats_the_exact_marks_and_tooltips_of_the_table(warehouse_env):
+def test_documents_hint_repeats_the_exact_marks_and_tooltips_of_the_table():
     """Підказка малює ті самі позначки, що й рядки, і цитує їхні справжні підказки."""
-    client, db, html = await _documents_page(warehouse_env)
-    try:
-        result = _run_doc_legend(html, DOC_LEGEND_DOCS)
-        legend = result["legend"]
+    result = _run_doc_legend(DOC_LEGEND_DOCS)
+    legend = result["legend"]
 
-        # три пояснення — за три позначки, і кожне з прикладом
-        assert legend.count("Приклад:") == 3
-        for label in ("Не в обліку", "Ручне редагування", "Дубль номера"):
-            assert label in legend, label
+    # три пояснення — за три позначки, і кожне з прикладом
+    assert legend.count("Приклад:") == 3
+    for label in ("Не в обліку", "Ручне редагування", "Дубль номера"):
+        assert label in legend, label
 
-        # приклади цитують підказки, які користувач бачить при наведенні на позначку
-        assert "«Документ не в обліку. Не розпізнано: Дата документа»" in legend
-        assert "«Правка вручну»" in legend
-        assert "«Такий самий номер ще в 2 документах»" in legend
+    # приклади цитують підказки, які користувач бачить при наведенні на позначку
+    assert "«Документ не в обліку. Не розпізнано: Дата документа»" in legend
+    assert "«Правка вручну»" in legend
+    assert "«Такий самий номер ще в 2 документах»" in legend
 
-        # фіолетовий зразок клітинки номера — той самий клас, що й у рядку таблиці
-        assert '<span class="doc-dup px-1.5 py-0.5 rounded font-mono">№ 7</span>' in legend
+    # фіолетовий зразок клітинки номера — той самий клас, що й у рядку таблиці
+    assert '<span class="doc-dup px-1.5 py-0.5 rounded font-mono">№ 7</span>' in legend
 
-        # самі позначки — не переказ, а та сама розмітка, що в рядках
-        assert result["shown"] == {"triangle": True, "pen": True, "twin": True}
-    finally:
-        await client.close()
-        db.close()
+    # самі позначки — не переказ, а та сама розмітка, що в рядках
+    assert result["shown"] == {"triangle": True, "pen": True, "twin": True}
