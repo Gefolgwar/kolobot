@@ -45,6 +45,12 @@ HTML_PAGE = r"""<!DOCTYPE html>
         /* Дубль номера документа (#26): підсвічується клітинка «№ документа», не рядок.
            Клас носить сама клітинка, тому з text-slate-300 він не змагається. */
         .doc-dup { background: rgba(168,85,247,0.15); color: #d8b4fe; }
+        /* Блок підказок у вкладці «Документи» — нативний <details>: згортання робить браузер,
+           JS не потрібен. Системний трикутник <summary> прибираємо, бо стан показує власна
+           стрілка, а сам рядок-заголовок лишається видимим і в згорнутому вигляді. */
+        .doc-legend > summary { list-style: none; }
+        .doc-legend > summary::-webkit-details-marker { display: none; }
+        .doc-legend[open] .doc-legend-arrow { transform: rotate(180deg); }
         .progress-bar { transition: width 0.3s ease; }
         .cursor-blink { animation: blink 1s step-end infinite; }
         @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
@@ -257,6 +263,17 @@ HTML_PAGE = r"""<!DOCTYPE html>
                 </button>
             </div>
         </div>
+        <!-- Підказка до таблиці: розгорнута за замовчуванням, згортається без JS.
+             Заголовок лишається на екрані й у згорнутому стані, тож блок читається як
+             пояснення, а не як ще один рядок таблиці. -->
+        <details class="glass rounded-2xl mb-6 doc-legend" open>
+            <summary class="px-4 py-3 flex items-center gap-2 cursor-pointer select-none text-xs text-slate-400 hover:text-slate-200 transition">
+                <i class="fa-solid fa-circle-info text-sky-400"></i>
+                <span class="font-semibold">Підказка: що означають позначки в таблиці</span>
+                <i class="fa-solid fa-chevron-down doc-legend-arrow ml-auto text-[10px] transition-transform"></i>
+            </summary>
+            <div id="doc-legend-body" class="px-4 pb-4 pt-1 text-xs border-t border-slate-800/60 divide-y divide-slate-800/40"></div>
+        </details>
         <div class="glass rounded-2xl border border-slate-800 overflow-hidden shadow-2xl">
             <div class="overflow-x-auto">
                 <table class="w-full text-left border-collapse compact-table card-table">
@@ -1476,6 +1493,36 @@ function filterDocs() {
 }
 // ---- Кінець фільтра «Не в обліку» (#29) ----
 
+// ---- Підказка до позначок таблиці ----
+// Позначки в підказці — ті самі, що й у рядках: розмітку будують ті самі функції, лише
+// з прикладовими даними. Тому підказка не може розійтися з таблицею, а «Приклад» цитує
+// ту саму підказку, яку користувач побачить при наведенні на позначку.
+function renderDocLegend() {
+    const body = document.getElementById('doc-legend-body');
+    if (!body) return;
+    const tooltip = mark => mark.split('title="')[1].split('"')[0];
+    const row = (mark, label, text, example) => `
+        <div class="flex gap-3 py-2">
+            <div class="w-16 shrink-0 text-center leading-5">${mark}</div>
+            <div class="leading-5">
+                <span class="text-slate-200 font-semibold">${label}</span><span class="text-slate-400"> — ${text}</span>
+                <div class="text-slate-500 mt-0.5">Приклад: ${example}</div>
+            </div>
+        </div>`;
+    const unaccounted = docUnaccountedMark(['Дата документа']);
+    const edited = manualEditMark(true);
+    const twin = docNumberTwinMark(2);
+    body.innerHTML =
+        row(unaccounted, 'Не в обліку', 'не розпізнано обовʼязкові поля, тож документ не входить у залишки',
+            'документ без дати — «' + tooltip(unaccounted) + '»') +
+        row(edited, 'Ручне редагування', 'поля документа заповнив або виправив користувач, а не розпізнавання',
+            'ви вписали номер вручну — «' + tooltip(edited) + '»') +
+        row('<span class="doc-dup px-1.5 py-0.5 rounded font-mono">№ 7</span>' + twin, 'Дубль номера',
+            'такий самий номер уже є в інших документах',
+            'клітинка «№ документа» — «' + tooltip(twin) + '»');
+}
+// ---- Кінець підказки до позначок таблиці ----
+
 function renderDocs(docs) {
     lastRenderedDocs = docs;
     const sorted = applyDocSort(docs);
@@ -1497,14 +1544,8 @@ function renderDocs(docs) {
         const docNumberKey = normalizeDocNumber(doc.doc_number);
         const twinCount = docNumberKey ? (twinCounts[docNumberKey] || 1) - 1 : 0;
         const docNumberCls = twinCount ? 'doc-dup' : 'text-slate-300';
-        const docNumberTwin = twinCount
-            ? `<span class="text-purple-300 ml-1" title="Такий самий номер ще в ${twinCount} документах"><i class="fa-solid fa-clone"></i></span>`
-            : '';
         // Мітка «не в обліку»: перелік не розпізнаних полів дає бекенд, клітинка лише показує його
         const missingFields = doc.missing_fields || [];
-        const unaccountedMark = missingFields.length
-            ? `<span class="text-amber-400 ml-1 align-middle" title="Документ не в обліку. Не розпізнано: ${esc(missingFields.join(', '))}"><i class="fa-solid fa-triangle-exclamation"></i></span>`
-            : '';
         let docTypeBadge = '';
         if (docType === 'НАКЛАДНА') {
             docTypeBadge = '<span class="px-2 py-0.5 rounded-full text-[11px] font-medium badge-nakladna"><i class="fa-solid fa-arrow-down mr-1"></i>Накладна</span>';
@@ -1539,14 +1580,14 @@ function renderDocs(docs) {
 
         html += `
         <tr class="hover:bg-slate-800/40 transition cursor-pointer" onclick="toggleDocImpact(${doc.id})">
-            <td class="py-4 px-3 whitespace-nowrap"><i id="doc-chevron-${doc.id}" class="fa-solid fa-chevron-right text-[10px] text-slate-500 transition-transform"></i>${unaccountedMark}</td>
+            <td class="py-4 px-3 whitespace-nowrap"><i id="doc-chevron-${doc.id}" class="fa-solid fa-chevron-right text-[10px] text-slate-500 transition-transform"></i>${docUnaccountedMark(missingFields)}${manualEditMark(doc.manual_edited)}</td>
             <td class="py-4 px-3" data-label="Превʼю">${previewBtn}</td>
-            <td class="py-4 px-3 font-medium text-slate-200 break-words" data-label="Файл">${esc(doc.filename)}${manualEditMark(doc.manual_edited)}</td>
+            <td class="py-4 px-3 font-medium text-slate-200 break-words" data-label="Файл">${esc(doc.filename)}</td>
             <td class="py-4 px-3" data-label="Тип"><span class="px-2 py-0.5 rounded-full text-[11px] font-medium badge-import">${typeLabel}</span></td>
             <td class="py-4 px-3" data-label="Тип документу">${docTypeBadge}</td>
             <td class="py-4 px-3" data-label="Статус">${docStatusBadge(doc)}</td>
             <td class="py-4 px-3 text-slate-300" data-label="Дата завантаження">${date}</td>
-            <td class="py-4 px-3 font-mono ${docNumberCls}" data-label="№ документа">${esc(doc.doc_number)}${docNumberTwin}</td>
+            <td class="py-4 px-3 font-mono ${docNumberCls}" data-label="№ документа">${esc(doc.doc_number)}${docNumberTwinMark(twinCount)}</td>
             <td class="py-4 px-3 text-slate-300" data-label="Затребував">
                 <span class="block break-words">${fmtRequestedBy(requestedBy)}</span>
             </td>
@@ -2205,6 +2246,18 @@ function manualEditMark(isEdited) {
     if (!isEdited) return '';
     return ' <span class="text-amber-400" title="Правка вручну"><i class="fa-solid fa-pen"></i></span>';
 }
+// Мітка «не в обліку»: перелік не розпізнаних полів дає бекенд, клітинка лише показує його.
+// Нею користуються і рядок таблиці, і підказка до позначок — щоб вони не розійшлися.
+function docUnaccountedMark(missingFields) {
+    if (!missingFields.length) return '';
+    return ` <span class="text-amber-400 ml-1 align-middle" title="Документ не в обліку. Не розпізнано: ${esc(missingFields.join(', '))}"><i class="fa-solid fa-triangle-exclamation"></i></span>`;
+}
+// Клон-підказка до підсвіченої клітинки «№ документа» (клас .doc-dup): скільки ще документів
+// мають такий самий номер. Нею користуються і рядок таблиці, і підказка до позначок.
+function docNumberTwinMark(twinCount) {
+    if (!twinCount) return '';
+    return `<span class="text-purple-300 ml-1" title="Такий самий номер ще в ${twinCount} документах"><i class="fa-solid fa-clone"></i></span>`;
+}
 
 // ---- Log Console Logic ----
 
@@ -2394,6 +2447,7 @@ document.addEventListener('DOMContentLoaded', function() {
     refreshAll();
     fetchLogs();
     connectLogStream();
+    renderDocLegend();
     const imgContainer = document.getElementById('img-modal-container');
     if (imgContainer) {
         imgContainer.addEventListener('wheel', function(e) {

@@ -2644,6 +2644,48 @@ async def test_unaccounted_document_gets_a_triangle_with_its_missing_fields(ware
         db.close()
 
 
+MANUAL_EDIT_SPAN = '<span class="text-amber-400" title="Правка вручну">'
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(NODE is None, reason="node недоступний — JS сторінки не виконати")
+async def test_manual_edit_mark_stands_next_to_the_unaccounted_triangle(warehouse_env):
+    """Позначка ручного редагування живе в тій самій колонці, що й трикутник «не в обліку»."""
+    client, db, html = await _documents_page(warehouse_env)
+    try:
+        docs = [
+            # не в обліку і правлений вручну — обидві позначки поряд
+            dict(_unaccounted_doc(1, "а.pdf", ["Затребував"]), manual_edited=True),
+            # лише правлений вручну — трикутника немає, позначка на своєму місці
+            dict(_unaccounted_doc(2, "б.pdf", []), manual_edited=True),
+            # повністю розпізнаний і не правлений — колонка порожня
+            dict(_unaccounted_doc(3, "в.pdf", []), manual_edited=False),
+        ]
+        result = _run_doc_unaccounted(html, {"docs": docs, "cards": {}, "cardDocIds": []})
+        markup = result["initial"]["markup"]
+
+        assert result["initial"]["marks"]["3"] == ""
+
+        # обидві позначки — у першій колонці, трикутник перед олівцем і без нічого між ними
+        both = result["initial"]["marks"]["1"]
+        assert "fa-triangle-exclamation" in both
+        assert "fa-pen" in both
+        assert both.index("fa-triangle-exclamation") < both.index("fa-pen")
+        triangle_end = both.index("</span>") + len("</span>")
+        assert both[triangle_end:both.index(MANUAL_EDIT_SPAN)].strip() == ""
+
+        # самотня позначка правки не тягне за собою трикутник
+        alone = result["initial"]["marks"]["2"]
+        assert MANUAL_EDIT_SPAN in alone
+        assert "fa-triangle-exclamation" not in alone
+
+        # у колонці «Файл» позначки більше немає
+        assert MANUAL_EDIT_SPAN not in _row_of(markup, 1).split('data-label="Файл"')[1].split("</td>")[0]
+    finally:
+        await client.close()
+        db.close()
+
+
 @pytest.mark.asyncio
 @pytest.mark.skipif(NODE is None, reason="node недоступний — JS сторінки не виконати")
 async def test_unaccounted_mark_ignores_sorting_and_counts_the_whole_list(warehouse_env):
@@ -3301,5 +3343,120 @@ async def test_repeat_button_stays_visible_only_for_error_documents(warehouse_en
         db.close()
 
 
+# ---- Підказка до позначок у вкладці «Документи» ----
+
+DOC_LEGEND_START = "// ---- Підказка до позначок таблиці ----"
+DOC_LEGEND_END = "// ---- Кінець підказки до позначок таблиці ----"
+
+# Перший документ — і «не в обліку» (бракує тієї самої дати, що й у прикладі підказки), і
+# ручна правка. Три документи з одним номером дають кожному з них двох двійників — рівно
+# стільки, скільки обіцяє приклад підказки.
+DOC_LEGEND_DOCS = [
+    dict(_unaccounted_doc(1, "а.pdf", ["Дата документа"]), manual_edited=True),
+    dict(_unaccounted_doc(2, "б.pdf", []), doc_number="№ 7"),
+    dict(_unaccounted_doc(3, "в.pdf", []), doc_number="№ 7"),
+    dict(_unaccounted_doc(4, "г.pdf", []), doc_number="№ 7"),
+]
+
+# Оточення браузера те саме, що й у слайсі #29: сторінка цілком, DOM лише приймає розмітку.
+_DOC_LEGEND_DRIVER = """
+(async () => {
+    allDocs = payload.docs;
+    renderDocLegend();
+    const legend = els['doc-legend-body'].innerHTML;
+
+    await fetchDocs();
+    const table = els['docs-tbody'].innerHTML;
+    const samples = {
+        triangle: docUnaccountedMark(['Дата документа']),
+        pen: manualEditMark(true),
+        twin: docNumberTwinMark(2)
+    };
+    // Підказка показує ту саму розмітку, що й рядки таблиці: де саме стоїть позначка в
+    // рядку — справа тестів рядка, тут важлива лише тотожність розмітки.
+    const shown = {};
+    for (const key in samples) {
+        shown[key] = legend.includes(samples[key]) && table.includes(samples[key]);
+    }
+    console.log(JSON.stringify({legend: legend, shown: shown}));
+})();
+"""
 
 
+def _run_doc_legend(html, docs):
+    """Проганяє сторінку в node: підказка й рядки таблиці мають показати ті самі позначки."""
+    page = html.split("<script>", 1)[1].split("</script>", 1)[0]
+    with tempfile.TemporaryDirectory() as tmp:
+        script = os.path.join(tmp, "doc_legend.js")
+        payload_path = os.path.join(tmp, "payload.json")
+        with open(script, "w", encoding="utf-8") as fh:
+            fh.write(_DOC_UNACCOUNTED_STUBS + page + _DOC_LEGEND_DRIVER)
+        with open(payload_path, "w", encoding="utf-8") as fh:
+            json.dump({"docs": docs}, fh)
+        proc = subprocess.run([NODE, script, payload_path],
+                              capture_output=True, text=True, encoding="utf-8")
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout)
+
+
+@pytest.mark.asyncio
+async def test_documents_tab_carries_a_collapsible_hint_above_the_table(warehouse_env):
+    """Підказка — нативний <details> над таблицею: згортається, але лишається підписаною."""
+    client, db, html = await _documents_page(warehouse_env)
+    try:
+        panel = html.split('<main id="panel-documents"', 1)[1].split('id="docs-tbody"', 1)[0]
+        assert panel.index("doc-legend") < panel.index("<table")
+
+        # єдиний розгортуваний блок на вкладці, розгорнутий за замовчуванням
+        assert panel.count("<details") == 1
+        assert 'class="glass rounded-2xl mb-6 doc-legend" open' in panel
+
+        legend = panel.split("<details", 1)[1].split("</details>", 1)[0]
+        assert legend.count("<summary") == 1
+        # згорнутий блок усе одно читається як пояснення: заголовок лишається на екрані
+        summary = legend.split("<summary", 1)[1].split("</summary>", 1)[0]
+        assert "fa-circle-info" in summary
+        assert "Підказка" in summary
+        assert "позначки в таблиці" in summary
+
+        # тіло наповнює сторінка, а системний маркер <summary> прибирає CSS
+        assert 'id="doc-legend-body"' in legend
+        assert ".doc-legend > summary { list-style: none; }" in html
+        assert ".doc-legend > summary::-webkit-details-marker { display: none; }" in html
+        assert ".doc-legend[open] .doc-legend-arrow { transform: rotate(180deg); }" in html
+
+        # малюється один раз, на ініціалізації, а не при кожному оновленні списку
+        assert "renderDocLegend();" in html.split("document.addEventListener('DOMContentLoaded'", 1)[1]
+        assert html.count("function renderDocLegend(") == 1
+    finally:
+        await client.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(NODE is None, reason="node недоступний — JS сторінки не виконати")
+async def test_documents_hint_repeats_the_exact_marks_and_tooltips_of_the_table(warehouse_env):
+    """Підказка малює ті самі позначки, що й рядки, і цитує їхні справжні підказки."""
+    client, db, html = await _documents_page(warehouse_env)
+    try:
+        result = _run_doc_legend(html, DOC_LEGEND_DOCS)
+        legend = result["legend"]
+
+        # три пояснення — за три позначки, і кожне з прикладом
+        assert legend.count("Приклад:") == 3
+        for label in ("Не в обліку", "Ручне редагування", "Дубль номера"):
+            assert label in legend, label
+
+        # приклади цитують підказки, які користувач бачить при наведенні на позначку
+        assert "«Документ не в обліку. Не розпізнано: Дата документа»" in legend
+        assert "«Правка вручну»" in legend
+        assert "«Такий самий номер ще в 2 документах»" in legend
+
+        # фіолетовий зразок клітинки номера — той самий клас, що й у рядку таблиці
+        assert '<span class="doc-dup px-1.5 py-0.5 rounded font-mono">№ 7</span>' in legend
+
+        # самі позначки — не переказ, а та сама розмітка, що в рядках
+        assert result["shown"] == {"triangle": True, "pen": True, "twin": True}
+    finally:
+        await client.close()
+        db.close()
