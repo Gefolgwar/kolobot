@@ -252,15 +252,15 @@ HTML_PAGE = r"""<!DOCTYPE html>
                         <tr class="bg-slate-900/90 text-slate-400 text-xs font-semibold uppercase border-b border-slate-800">
                             <th class="py-4 px-3 w-8"></th>
                             <th class="py-4 px-3">Превʼю</th>
-                            <th class="py-4 px-3">Файл</th>
-                            <th class="py-4 px-3">Тип</th>
-                            <th class="py-4 px-3">Тип документу</th>
-                            <th class="py-4 px-3">Статус</th>
-                            <th class="py-4 px-3">Дата завантаження</th>
-                            <th class="py-4 px-3">№ документа</th>
-                            <th class="py-4 px-3">Затребував</th>
-                            <th class="py-4 px-3">Через кого</th>
-                            <th class="py-4 px-3">Позицій</th>
+                            <th id="doc-sort-filename" onclick="toggleDocSort('filename')" class="py-4 px-3 cursor-pointer select-none hover:text-slate-200 transition">Файл <i id="doc-sort-icon-filename" class="fa-solid fa-sort text-slate-600"></i></th>
+                            <th id="doc-sort-file_type" onclick="toggleDocSort('file_type')" class="py-4 px-3 cursor-pointer select-none hover:text-slate-200 transition">Тип <i id="doc-sort-icon-file_type" class="fa-solid fa-sort text-slate-600"></i></th>
+                            <th id="doc-sort-doc_type" onclick="toggleDocSort('doc_type')" class="py-4 px-3 cursor-pointer select-none hover:text-slate-200 transition">Тип документу <i id="doc-sort-icon-doc_type" class="fa-solid fa-sort text-slate-600"></i></th>
+                            <th id="doc-sort-status" onclick="toggleDocSort('status')" class="py-4 px-3 cursor-pointer select-none hover:text-slate-200 transition">Статус <i id="doc-sort-icon-status" class="fa-solid fa-sort text-slate-600"></i></th>
+                            <th id="doc-sort-uploaded_at" onclick="toggleDocSort('uploaded_at')" class="py-4 px-3 cursor-pointer select-none hover:text-slate-200 transition">Дата завантаження <i id="doc-sort-icon-uploaded_at" class="fa-solid fa-sort text-slate-600"></i></th>
+                            <th id="doc-sort-doc_number" onclick="toggleDocSort('doc_number')" class="py-4 px-3 cursor-pointer select-none hover:text-slate-200 transition">№ документа <i id="doc-sort-icon-doc_number" class="fa-solid fa-sort text-slate-600"></i></th>
+                            <th id="doc-sort-requested_by" onclick="toggleDocSort('requested_by')" class="py-4 px-3 cursor-pointer select-none hover:text-slate-200 transition">Затребував <i id="doc-sort-icon-requested_by" class="fa-solid fa-sort text-slate-600"></i></th>
+                            <th id="doc-sort-requested_via" onclick="toggleDocSort('requested_via')" class="py-4 px-3 cursor-pointer select-none hover:text-slate-200 transition">Через кого <i id="doc-sort-icon-requested_via" class="fa-solid fa-sort text-slate-600"></i></th>
+                            <th id="doc-sort-transaction_count" onclick="toggleDocSort('transaction_count')" class="py-4 px-3 cursor-pointer select-none hover:text-slate-200 transition">Позицій <i id="doc-sort-icon-transaction_count" class="fa-solid fa-sort text-slate-600"></i></th>
                             <th class="py-4 px-3 text-right">Дії</th>
                         </tr>
                     </thead>
@@ -1128,14 +1128,116 @@ async function fetchDocs() {
     }
 }
 
+// ---- Сортування таблиці документів (#25) ----
+// Порядок рядків у SQL лишається незмінним: сортування переставляє лише той
+// список, який сторінка вже завантажила, і тримає свій стан у памʼяті сторінки.
+
+// Стан сортування живе поряд зі станом фільтра й застосовується при кожному
+// рендері, тож переживає автооновлення і скидається лише перезавантаженням сторінки.
+let docSort = { key: null, dir: null };
+// Останній список, який показала таблиця (з урахуванням пошуку й фільтрів).
+let lastRenderedDocs = [];
+
+function comparePlainText(a, b) {
+    return String(a == null ? '' : a).localeCompare(String(b == null ? '' : b), 'uk');
+}
+
+// Числове подання значення колонки: 10 → 10, «№ 0002143» → 2143, «—» → NaN.
+// Спільний помічник для номерів і кількостей — ним користуватиметься й підсвічування дублів.
+function numericValue(v) {
+    if (v === null || v === undefined) return NaN;
+    if (typeof v === 'number') return v;
+    const m = String(v).replace(/\s/g, '').match(/-?\d+(?:[.,]\d+)?/);
+    return m ? Number(m[0].replace(',', '.')) : NaN;
+}
+
+// Порівняння номерів і кількостей як чисел: «10» іде після «9», а не перед ним.
+// Якщо число не читається з обох боків — порівнюємо як текст.
+function compareNumericValues(a, b) {
+    const na = numericValue(a);
+    const nb = numericValue(b);
+    if (!isNaN(na) && !isNaN(nb)) return na < nb ? -1 : (na > nb ? 1 : 0);
+    return comparePlainText(a, b);
+}
+
+// Життєвий цикл документа — саме цей порядок, а не алфавіт.
+const DOC_STATUS_ORDER = ['queued', 'processing_ocr', 'processing_emb', 'completed', 'error'];
+
+function compareDocStatus(a, b) {
+    const ia = DOC_STATUS_ORDER.indexOf(a);
+    const ib = DOC_STATUS_ORDER.indexOf(b);
+    if (ia === ib) return comparePlainText(a, b);
+    return (ia === -1 ? DOC_STATUS_ORDER.length : ia) - (ib === -1 ? DOC_STATUS_ORDER.length : ib);
+}
+
+// Девʼять колонок, які сортуються, і спосіб порівняння кожної.
+// Превʼю, розгортання й дії лишаються не сортованими.
+const DOC_SORT_COLUMNS = {
+    filename:          { get: d => d.filename,              compare: comparePlainText },
+    file_type:         { get: d => d.file_type,             compare: comparePlainText },
+    doc_type:          { get: d => d.doc_type,              compare: comparePlainText },
+    status:            { get: d => d.status || 'completed', compare: compareDocStatus },
+    uploaded_at:       { get: d => d.uploaded_at,           compare: compareNumericValues },
+    doc_number:        { get: d => d.doc_number,            compare: compareNumericValues },
+    requested_by:      { get: d => d.requested_by,          compare: comparePlainText },
+    requested_via:     { get: d => d.requested_via,         compare: comparePlainText },
+    transaction_count: { get: d => d.transaction_count,     compare: compareNumericValues },
+};
+
+// Сортує переданий список — тобто результат пошуку й фільтрів, а не весь allDocs.
+// Порожнє значення колонки завжди опиняється в кінці, хоч за зростанням, хоч за спаданням.
+function applyDocSort(docs) {
+    const col = docSort.key ? DOC_SORT_COLUMNS[docSort.key] : null;
+    if (!col) return docs;
+    const dir = docSort.dir === 'desc' ? -1 : 1;
+    const filled = [];
+    const empty = [];
+    docs.forEach(d => {
+        const v = col.get(d);
+        (v === null || v === undefined || String(v).trim() === '' ? empty : filled).push(d);
+    });
+    filled.sort((a, b) => col.compare(col.get(a), col.get(b)) * dir);
+    return filled.concat(empty);
+}
+
+// Клік по заголовку: зростання → спадання → типовий порядок. Сортується одна колонка за раз.
+function toggleDocSort(key) {
+    if (docSort.key !== key) {
+        docSort = { key: key, dir: 'asc' };
+    } else if (docSort.dir === 'asc') {
+        docSort = { key: key, dir: 'desc' };
+    } else {
+        docSort = { key: null, dir: null };
+    }
+    renderDocs(lastRenderedDocs);
+    renderDocSortIndicators();
+}
+
+// Показує, яка колонка активна і в якому напрямку: стрілка вгору/вниз у її заголовку.
+function renderDocSortIndicators() {
+    Object.keys(DOC_SORT_COLUMNS).forEach(key => {
+        const icon = document.getElementById('doc-sort-icon-' + key);
+        const th = document.getElementById('doc-sort-' + key);
+        if (!icon) return;
+        const active = docSort.key === key;
+        icon.className = active && docSort.dir === 'desc'
+            ? 'fa-solid fa-sort-down text-sky-400'
+            : (active ? 'fa-solid fa-sort-up text-sky-400' : 'fa-solid fa-sort text-slate-600');
+        if (th) th.style.color = active ? '#38bdf8' : '';
+    });
+}
+// ---- Кінець сортування таблиці документів (#25) ----
+
 function renderDocs(docs) {
+    lastRenderedDocs = docs;
+    const sorted = applyDocSort(docs);
     const tbody = document.getElementById('docs-tbody');
-    if (docs.length === 0) {
+    if (sorted.length === 0) {
         tbody.innerHTML = '<tr><td colspan="12" class="py-12 text-center text-slate-500"><p>Документів немає.</p></td></tr>';
         return;
     }
     let html = '';
-    docs.forEach(doc => {
+    sorted.forEach(doc => {
         const icon = getFileIcon(doc.file_type);
         const typeLabel = doc.file_type === 'excel' ? 'Excel' : (doc.file_type === 'photo' ? 'Фото' : 'PDF');
         const date = formatTs(doc.uploaded_at);

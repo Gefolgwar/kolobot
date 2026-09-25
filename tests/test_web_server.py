@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import os
+import shutil
+import subprocess
+import tempfile
 from unittest.mock import MagicMock
 
 import pytest
@@ -154,7 +158,7 @@ async def test_documents_panel_renders_queued_status_column(warehouse_env):
     try:
         resp = await client.get("/")
         html = await resp.text()
-        assert ">Статус<" in html
+        assert ">Статус <i" in html  # #25: у заголовку колонки тепер ще й індикатор сортування
         assert "⏳ В черзі" in html
         assert "Документ у черзі на розпізнавання" in html
     finally:
@@ -1406,6 +1410,292 @@ async def test_document_card_renders_all_recognition_fields(warehouse_env):
         # у Excel-документа й системного документа розділу розпізнаних полів немає, як і раніше
         excel_branch = card.split("// Excel / other non-photo documents", 1)[1]
         assert "metaField(" not in excel_branch
+    finally:
+        await client.close()
+        db.close()
+
+
+# ---- Слайс #25: сортування таблиці документів ----
+
+NODE = shutil.which("node")
+
+DOC_SORT_BLOCK_START = "// ---- Сортування таблиці документів (#25) ----"
+DOC_SORT_BLOCK_END = "// ---- Кінець сортування таблиці документів (#25) ----"
+
+# Заголовок → ключ сортування. Девʼять колонок; превʼю, розгортання й дії не сортуються.
+DOC_SORT_HEADERS = (
+    ("Файл", "filename"),
+    ("Тип", "file_type"),
+    ("Тип документу", "doc_type"),
+    ("Статус", "status"),
+    ("Дата завантаження", "uploaded_at"),
+    ("№ документа", "doc_number"),
+    ("Затребував", "requested_by"),
+    ("Через кого", "requested_via"),
+    ("Позицій", "transaction_count"),
+)
+
+# Типовий (SQL) порядок — саме він: [1, 2, 3, 4].
+DOC_SORT_DOCS = [
+    # номер «9» і 9 позицій — менші за «10» лише числово, не текстово
+    {"id": 1, "filename": "б.pdf", "file_type": "pdf", "doc_type": "НАКЛАДНА",
+     "status": "completed", "uploaded_at": 999999999, "doc_number": "9",
+     "requested_by": "Іваненко", "requested_via": "7939", "transaction_count": 9},
+    # номер «10» і 10 позицій; дата на секунду новіша за id=1, але рядок довший
+    {"id": 2, "filename": "а.pdf", "file_type": "pdf", "doc_type": "ВИМОГА",
+     "status": "queued", "uploaded_at": 1000000000, "doc_number": "10",
+     "requested_by": "Петренко", "requested_via": "8110", "transaction_count": 10},
+    # порожні номер, кількість, дата й «через кого»
+    {"id": 3, "filename": "в.pdf", "file_type": "pdf", "doc_type": "",
+     "status": "error", "uploaded_at": None, "doc_number": "",
+     "requested_by": "", "requested_via": "", "transaction_count": None},
+    # номер із провідними нулями — числово це 2143, тобто після 10
+    {"id": 4, "filename": "г.pdf", "file_type": "excel", "doc_type": "НАКЛАДНА",
+     "status": "processing_ocr", "uploaded_at": 1000000001, "doc_number": "0002143",
+     "requested_by": "Іваненко", "requested_via": "7939", "transaction_count": 12},
+]
+
+# Виконує справжній JS зі сторінки в node: у браузері працюють ті самі функції.
+_DOC_SORT_DRIVER = """
+const fs = require('fs');
+const payload = JSON.parse(fs.readFileSync(0, 'utf8'));
+const idOf = list => list.map(d => d.id);
+if (payload.mode === 'sort') {
+    docSort = { key: payload.sort.key, dir: payload.sort.dir };
+    console.log(JSON.stringify(idOf(applyDocSort(payload.docs))));
+} else {
+    // DOM і рендер підмінюються: перевіряється стан сортування, а не розмітка
+    globalThis.document = { getElementById: () => null };
+    const rendered = [];
+    globalThis.renderDocs = docs => rendered.push(idOf(applyDocSort(docs)));
+    lastRenderedDocs = payload.docs;
+    const states = [];
+    payload.clicks.forEach(key => { toggleDocSort(key); states.push(docSort.key + ':' + docSort.dir); });
+    // автооновлення: рендер без кліку не має скидати стан
+    if (payload.refresh) rendered.push(idOf(applyDocSort(payload.docs)));
+    console.log(JSON.stringify({ states: states, rendered: rendered }));
+}
+"""
+
+
+def _run_doc_sort(html, payload):
+    """Проганяє сортувальний блок сторінки через node і повертає розібраний результат."""
+    block = html.split(DOC_SORT_BLOCK_START, 1)[1].split(DOC_SORT_BLOCK_END, 1)[0]
+    with tempfile.TemporaryDirectory() as tmp:
+        script = os.path.join(tmp, "doc_sort.js")
+        with open(script, "w", encoding="utf-8") as fh:
+            fh.write(block + _DOC_SORT_DRIVER)
+        proc = subprocess.run([NODE, script], input=json.dumps(payload),
+                              capture_output=True, text=True, encoding="utf-8")
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout)
+
+
+def _sorted_ids(html, key, direction, docs=None):
+    return _run_doc_sort(html, {"mode": "sort", "docs": docs or DOC_SORT_DOCS,
+                                "sort": {"key": key, "dir": direction}})
+
+
+async def _documents_page(warehouse_env):
+    """Піднімає сторінку й віддає HTML разом із клієнтом і базою для закриття."""
+    db, fs, vs = warehouse_env
+    server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
+    client = TestClient(TestServer(server._app))
+    await client.start_server()
+    return client, db, await (await client.get("/")).text()
+
+
+@pytest.mark.asyncio
+async def test_documents_headers_are_clickable_and_sortable(warehouse_env):
+    """#25: девʼять змістовних колонок сортуються кліком, превʼю/розгортання/дії — ні."""
+    client, db, html = await _documents_page(warehouse_env)
+    try:
+        head = html.split('id="docs-tbody"')[0]
+
+        for label, key in DOC_SORT_HEADERS:
+            assert f'id="doc-sort-{key}"' in head, key
+            assert f"toggleDocSort('{key}')" in head, key
+            assert f'id="doc-sort-icon-{key}"' in head, key
+            assert label in head, label
+
+        # рівно девʼять сортованих заголовків — і жодного зайвого
+        assert head.count("toggleDocSort(") == 9
+
+        # колонки без змістовного значення лишились неклікабельними
+        assert '<th class="py-4 px-3 w-8"></th>' in head
+        assert '<th class="py-4 px-3">Превʼю</th>' in head
+        assert '<th class="py-4 px-3 text-right">Дії</th>' in head
+    finally:
+        await client.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_documents_sort_state_lives_in_page_memory_and_applies_on_every_render(warehouse_env):
+    """#25: стан сортування — поряд зі станом фільтра, застосовується при кожному рендері."""
+    client, db, html = await _documents_page(warehouse_env)
+    try:
+        # стан оголошено на рівні сторінки, поряд зі станом фільтра
+        assert "let activeFilter = '';" in html
+        assert "let docSort = { key: null, dir: null };" in html
+        docs_head = html.split('id="docs-tbody"')[0]
+        assert "let docSort" not in docs_head  # не в розмітці, а в скрипті
+
+        # сортується саме переданий список (результат пошуку й фільтрів), а не allDocs
+        render_docs = html.split("function renderDocs(docs)")[1].split("tbody.innerHTML = html;")[0]
+        assert "lastRenderedDocs = docs;" in render_docs
+        assert "applyDocSort(docs)" in render_docs
+        assert "applyDocSort(allDocs)" not in html
+
+        # клік перемальовує саме той список, який показано зараз
+        assert "renderDocs(lastRenderedDocs);" in html
+
+        # стан живе лише в памʼяті сторінки — перезавантаження його скидає
+        assert "localStorage" not in html
+        assert "sessionStorage" not in html
+    finally:
+        await client.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(NODE is None, reason="node недоступний — JS сторінки не виконати")
+async def test_documents_sort_numbers_put_10_after_9(warehouse_env):
+    """#25: номер документа й кількість позицій порівнюються числово, не текстово."""
+    client, db, html = await _documents_page(warehouse_env)
+    try:
+        # 9 → 10 → 2143, порожній номер завжди в кінці
+        assert _sorted_ids(html, "doc_number", "asc") == [1, 2, 4, 3]
+        assert _sorted_ids(html, "doc_number", "desc") == [4, 2, 1, 3]
+
+        # кількість позицій: 9 → 10 → 12, порожня кількість у кінці
+        assert _sorted_ids(html, "transaction_count", "asc") == [1, 2, 4, 3]
+        assert _sorted_ids(html, "transaction_count", "desc") == [4, 2, 1, 3]
+    finally:
+        await client.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(NODE is None, reason="node недоступний — JS сторінки не виконати")
+async def test_documents_sort_date_uses_real_time(warehouse_env):
+    """#25: дата сортується за часом, а не за рядком (1000000000 новіша за 999999999)."""
+    client, db, html = await _documents_page(warehouse_env)
+    try:
+        assert _sorted_ids(html, "uploaded_at", "asc") == [1, 2, 4, 3]
+        assert _sorted_ids(html, "uploaded_at", "desc") == [4, 2, 1, 3]
+    finally:
+        await client.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(NODE is None, reason="node недоступний — JS сторінки не виконати")
+async def test_documents_sort_status_follows_lifecycle(warehouse_env):
+    """#25: статуси шикуються за життєвим циклом, а не за алфавітом."""
+    client, db, html = await _documents_page(warehouse_env)
+    try:
+        # Черга → OCR → Вектори → Завершено → Помилка
+        assert _sorted_ids(html, "status", "asc") == [2, 4, 1, 3]
+        assert _sorted_ids(html, "status", "desc") == [3, 1, 4, 2]
+        assert "DOC_STATUS_ORDER = ['queued', 'processing_ocr', 'processing_emb', 'completed', 'error']" in html
+    finally:
+        await client.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(NODE is None, reason="node недоступний — JS сторінки не виконати")
+async def test_documents_sort_text_columns_and_empty_values_last(warehouse_env):
+    """#25: текстові колонки сортуються, порожнє значення завжди в кінці — в обидва боки."""
+    client, db, html = await _documents_page(warehouse_env)
+    try:
+        # порожній тип документу лишається останнім і за зростанням, і за спаданням
+        assert _sorted_ids(html, "doc_type", "asc") == [2, 1, 4, 3]
+        assert _sorted_ids(html, "doc_type", "desc") == [1, 4, 2, 3]
+        assert _sorted_ids(html, "filename", "asc") == [2, 1, 3, 4]
+
+        # порожній «через кого» — теж у кінці
+        assert _sorted_ids(html, "requested_via", "asc") == [1, 4, 2, 3]
+        assert _sorted_ids(html, "requested_via", "desc") == [2, 1, 4, 3]
+    finally:
+        await client.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(NODE is None, reason="node недоступний — JS сторінки не виконати")
+async def test_documents_sort_click_cycle_returns_to_default_order(warehouse_env):
+    """#25: зростання → спадання → типовий порядок; сортується одна колонка за раз."""
+    client, db, html = await _documents_page(warehouse_env)
+    try:
+        result = _run_doc_sort(html, {"mode": "cycle", "docs": DOC_SORT_DOCS,
+                                      "clicks": ["doc_number", "doc_number", "doc_number"],
+                                      "refresh": True})
+        assert result["states"] == ["doc_number:asc", "doc_number:desc", "null:null"]
+        assert result["rendered"][:3] == [[1, 2, 4, 3], [4, 2, 1, 3], [1, 2, 3, 4]]
+        # автооновлення після третього кліку: типовий порядок зберігся
+        assert result["rendered"][3] == [1, 2, 3, 4]
+
+        # перехід на іншу колонку скидає попередню й починає зі зростання
+        switch = _run_doc_sort(html, {"mode": "cycle", "docs": DOC_SORT_DOCS,
+                                      "clicks": ["doc_number", "filename"], "refresh": True})
+        assert switch["states"] == ["doc_number:asc", "filename:asc"]
+        assert switch["rendered"][-1] == [2, 1, 3, 4]
+    finally:
+        await client.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(NODE is None, reason="node недоступний — JS сторінки не виконати")
+async def test_documents_sort_applies_to_filtered_subset_only(warehouse_env):
+    """#25: сортується результат пошуку й фільтрів, а не повний список."""
+    client, db, html = await _documents_page(warehouse_env)
+    try:
+        subset = [DOC_SORT_DOCS[2], DOC_SORT_DOCS[0]]  # «10» у підмножині немає
+        assert _sorted_ids(html, "doc_number", "asc", docs=subset) == [1, 3]
+        assert _sorted_ids(html, "doc_number", "desc", docs=subset) == [1, 3]
+    finally:
+        await client.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_documents_sort_indicator_shows_column_and_direction(warehouse_env):
+    """#25: видно, яка колонка активна і в якому напрямку."""
+    client, db, html = await _documents_page(warehouse_env)
+    try:
+        indicators = html.split("function renderDocSortIndicators()")[1].split("\n}\n")[0]
+        assert "fa-sort-up" in indicators
+        assert "fa-sort-down" in indicators
+        assert "fa-sort " in indicators          # нейтральний стан неактивної колонки
+        assert "docSort.key === key" in indicators
+        assert "docSort.dir === 'desc'" in indicators
+
+        # індикатор оновлюється після кожного кліку
+        toggle = html.split("function toggleDocSort(key)")[1].split("\n}\n")[0]
+        assert "renderDocSortIndicators();" in toggle
+    finally:
+        await client.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_api_documents_keeps_sql_order(warehouse_env):
+    """#25: сортування клієнтське — порядок із бази не змінюється."""
+    db, fs, vs = warehouse_env
+    first = db.add_document(filename="a.pdf", file_type="pdf")
+    second = db.add_document(filename="b.pdf", file_type="pdf")
+
+    server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
+    client = TestClient(TestServer(server._app))
+    await client.start_server()
+
+    try:
+        data = await (await client.get("/api/warehouse/documents")).json()
+        assert [d["id"] for d in data] == [d["id"] for d in db.get_documents()]
+        assert {first, second} == {d["id"] for d in data}
     finally:
         await client.close()
         db.close()
