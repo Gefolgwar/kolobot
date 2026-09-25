@@ -22,6 +22,10 @@ REQUIRED_DOC_FIELDS = (
 # Документи, що не проходили розпізнавання: цих полів бланка в них не існує.
 NON_OCR_FILE_TYPES = ("excel", "manual")
 
+# Тип документа обирається лише з цих двох значень і сам визначає напрямок операцій.
+DOC_TYPE_VALUES = ("НАКЛАДНА", "ВИМОГА")
+DOC_TYPE_OPERATIONS = {"НАКЛАДНА": "income", "ВИМОГА": "expense"}
+
 
 def missing_doc_fields(doc: Dict[str, Any]) -> List[str]:
     """Назви порожніх обовʼязкових полів документа; для не-OCR документів — порожній список."""
@@ -543,6 +547,74 @@ class WarehouseDB:
             )
             self._conn.commit()
         return True
+
+    def edit_document_field(
+        self,
+        doc_id: int,
+        field: str,
+        value: Any,
+    ) -> Optional[Dict[str, Any]]:
+        """Ручна правка одного з пʼяти полів розпізнавання.
+
+        Повертає опис зміни, або None, якщо документа немає. Невідоме поле й
+        неприпустимий тип документа — ValueError. Правка номера й дати дістає
+        транзакції документа, зміна типу перераховує їхній напрямок.
+        """
+        labels = {column: label for label, column in REQUIRED_DOC_FIELDS}
+        if field not in labels:
+            raise ValueError(
+                f"Непідтримуване поле: {field}. Дозволені: {sorted(labels)}"
+            )
+
+        doc = self.get_document(doc_id)
+        if not doc:
+            return None
+
+        new_value = str(value or "").strip()
+        if field == "doc_type":
+            new_value = new_value.upper()
+            if new_value not in DOC_TYPE_VALUES:
+                raise ValueError(
+                    f"Непідтримуваний тип документа: {new_value or '(порожньо)'}. "
+                    f"Дозволені: {list(DOC_TYPE_VALUES)}"
+                )
+
+        old_value = str(doc.get(field) or "")
+        # Будь-яка успішна правка — ручна: документ більше не є суто OCR-результатом.
+        self._conn.execute(
+            f"UPDATE documents SET {field} = ?, manual_edited = 1 WHERE id = ?",
+            (new_value, doc_id),
+        )
+
+        updated_transactions = 0
+        if field in ("doc_number", "doc_date"):
+            # Вкладка «Склад» читає номер і дату з транзакцій, а не з документа.
+            cur = self._conn.execute(
+                f"UPDATE warehouse_transactions SET {field} = ? WHERE document_id = ?",
+                (new_value, doc_id),
+            )
+            updated_transactions = cur.rowcount
+        elif field == "doc_type":
+            cur = self._conn.execute(
+                "UPDATE warehouse_transactions SET operation_type = ? WHERE document_id = ?",
+                (DOC_TYPE_OPERATIONS[new_value], doc_id),
+            )
+            updated_transactions = cur.rowcount
+
+        self._conn.commit()
+
+        updated_doc = self.get_document(doc_id)
+        updated_doc["manual_edited"] = bool(updated_doc["manual_edited"])
+        updated_doc["missing_fields"] = missing_doc_fields(updated_doc)
+        return {
+            "success": True,
+            "field": field,
+            "label": labels[field],
+            "old_value": old_value,
+            "new_value": new_value,
+            "transactions_updated": updated_transactions,
+            "document": updated_doc,
+        }
 
     def get_document_impact(self, doc_id: int) -> List[Dict[str, Any]]:
         rows = self._conn.execute("""

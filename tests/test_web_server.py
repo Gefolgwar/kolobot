@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -1696,6 +1697,538 @@ async def test_api_documents_keeps_sql_order(warehouse_env):
         data = await (await client.get("/api/warehouse/documents")).json()
         assert [d["id"] for d in data] == [d["id"] for d in db.get_documents()]
         assert {first, second} == {d["id"] for d in data}
+    finally:
+        await client.close()
+        db.close()
+
+
+# =========================================================================
+# Слайс #31: ручне дозаповнення полів документа
+# =========================================================================
+
+RECOGNITION_FIELDS = ("doc_type", "doc_number", "doc_date", "requested_by", "requested_via")
+
+
+def _partial_photo_doc(db, **overrides):
+    """OCR-накладна, у якій не розпізнано «Затребував»."""
+    fields = {
+        "filename": "nakladna_0000215.jpg",
+        "file_type": "photo",
+        "doc_type": "НАКЛАДНА",
+        "doc_number": "0000215",
+        "doc_date": "15.08.2026",
+        "requested_by": "",
+        "requested_via": "7939 - (ПІБ)",
+    }
+    fields.update(overrides)
+    return db.add_document(**fields)
+
+
+def _doc_with_income(db, **overrides):
+    """Неповністю розпізнаний документ із приходом на 10 одиниць; повертає (doc_id, item_id)."""
+    doc_id = _partial_photo_doc(db, **overrides)
+    doc = db.get_document(doc_id)
+    item_id = db.add_item(name="Болт М8", sku="SKU-001", unit="шт")
+    db.add_transaction(
+        item_id=item_id, document_id=doc_id, operation_type="income", quantity=10.0,
+        doc_number=doc["doc_number"], doc_date=doc["doc_date"],
+    )
+    return doc_id, item_id
+
+
+async def _web_client(warehouse_env):
+    db, fs, vs = warehouse_env
+    server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
+    client = TestClient(TestServer(server._app))
+    await client.start_server()
+    return client
+
+
+async def _edit_field(client, doc_id, field, value, comment=None):
+    body = {"field": field, "value": value}
+    if comment is not None:
+        body["comment"] = comment
+    return await client.post(f"/api/warehouse/documents/{doc_id}/edit", json=body)
+
+
+@pytest.mark.asyncio
+async def test_api_edit_document_fills_the_empty_field(warehouse_env):
+    """Порожнє поле дозаповнюється окремим endpointʼом: поле, значення, коментар."""
+    db, fs, vs = warehouse_env
+    doc_id, _ = _doc_with_income(db, requested_by="")
+    client = await _web_client(warehouse_env)
+
+    try:
+        resp = await _edit_field(client, doc_id, "requested_by", "комірник (ПІБ)", "OCR не прочитав")
+        assert resp.status == 200
+        data = await resp.json()
+
+        assert data["success"] is True
+        assert data["field"] == "requested_by"
+        assert data["old_value"] == ""
+        assert data["new_value"] == "комірник (ПІБ)"
+        assert data["document"]["requested_by"] == "комірник (ПІБ)"
+        assert data["document"]["missing_fields"] == []
+
+        # картка документа показує дозаповнене значення
+        card = await (await client.get(f"/api/warehouse/documents/{doc_id}/ocr")).json()
+        assert card["requested_by"] == "комірник (ПІБ)"
+    finally:
+        await client.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["filename", "file_path", "raw_text", "status", "manual_edited", "user_id"])
+async def test_api_edit_document_rejects_fields_outside_the_five(warehouse_env, field):
+    """Дозволені рівно пʼять полів розпізнавання; будь-яке інше відхиляється."""
+    db, fs, vs = warehouse_env
+    doc_id = _partial_photo_doc(db)
+    before = db.get_document(doc_id)
+    client = await _web_client(warehouse_env)
+
+    try:
+        resp = await _edit_field(client, doc_id, field, "щось інше")
+
+        assert resp.status == 400
+        assert "Непідтримуване поле" in (await resp.json())["error"]
+        assert db.get_document(doc_id) == before
+    finally:
+        await client.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", list(RECOGNITION_FIELDS))
+async def test_api_edit_document_accepts_every_recognition_field(warehouse_env, field):
+    """Кожне з пʼяти полів бланка приймається endpointʼом."""
+    db, fs, vs = warehouse_env
+    doc_id = _partial_photo_doc(db)
+    value = "ВИМОГА" if field == "doc_type" else "0002199"
+    client = await _web_client(warehouse_env)
+
+    try:
+        resp = await _edit_field(client, doc_id, field, value)
+
+        assert resp.status == 200
+        assert db.get_document(doc_id)[field] == value
+    finally:
+        await client.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_api_edit_document_requires_field_and_value(warehouse_env):
+    """Без поля чи без значення правка не приймається."""
+    db, fs, vs = warehouse_env
+    doc_id = _partial_photo_doc(db)
+    client = await _web_client(warehouse_env)
+
+    try:
+        no_field = await client.post(f"/api/warehouse/documents/{doc_id}/edit", json={"value": "1"})
+        assert no_field.status == 400
+        assert "field" in (await no_field.json())["error"]
+
+        no_value = await client.post(f"/api/warehouse/documents/{doc_id}/edit", json={"field": "doc_number"})
+        assert no_value.status == 400
+        assert "value" in (await no_value.json())["error"]
+
+        assert db.get_document(doc_id)["doc_number"] == "0000215"
+    finally:
+        await client.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_api_edit_document_unknown_id_is_not_found(warehouse_env):
+    db, fs, vs = warehouse_env
+    client = await _web_client(warehouse_env)
+    try:
+        assert (await _edit_field(client, 404, "doc_number", "1")).status == 404
+    finally:
+        await client.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("doc_type", ["НАКЛАДНА", "ВИМОГА"])
+async def test_api_edit_document_type_accepts_the_two_form_values(warehouse_env, doc_type):
+    """Для типу документа приймаються лише «НАКЛАДНА» і «ВИМОГА»."""
+    db, fs, vs = warehouse_env
+    doc_id = _partial_photo_doc(db)
+    client = await _web_client(warehouse_env)
+
+    try:
+        resp = await _edit_field(client, doc_id, "doc_type", doc_type)
+
+        assert resp.status == 200
+        assert db.get_document(doc_id)["doc_type"] == doc_type
+    finally:
+        await client.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", ["АКТ", "Рахунок", "", "РУЧНЕ_КОРИГУВАННЯ", "НАКЛАДНА-ВИМОГА"])
+async def test_api_edit_document_type_rejects_any_other_value(warehouse_env, value):
+    """Інше значення типу документа відхиляється, документ лишається без змін."""
+    db, fs, vs = warehouse_env
+    doc_id = _partial_photo_doc(db)
+    client = await _web_client(warehouse_env)
+
+    try:
+        resp = await _edit_field(client, doc_id, "doc_type", value)
+
+        assert resp.status == 400
+        assert "тип документа" in (await resp.json())["error"]
+        assert db.get_document(doc_id)["doc_type"] == "НАКЛАДНА"
+    finally:
+        await client.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_api_edit_document_marks_the_edit_in_documents_and_warehouse_tabs(warehouse_env):
+    """Позначку ручного редагування видно і в таблиці документів, і на рядку документа у «Складі»."""
+    db, fs, vs = warehouse_env
+    doc_id, item_id = _doc_with_income(db, requested_by="")
+    client = await _web_client(warehouse_env)
+
+    try:
+        docs = {d["id"]: d for d in (await (await client.get("/api/warehouse/documents")).json())}
+        txs = await (await client.get(f"/api/warehouse/items/{item_id}/transactions")).json()
+        assert docs[doc_id]["manual_edited"] is False
+        assert txs[0]["manual_edited"] is False
+
+        await _edit_field(client, doc_id, "requested_by", "комірник (ПІБ)")
+
+        docs = {d["id"]: d for d in (await (await client.get("/api/warehouse/documents")).json())}
+        txs = await (await client.get(f"/api/warehouse/items/{item_id}/transactions")).json()
+        assert docs[doc_id]["manual_edited"] is True
+        assert docs[doc_id]["missing_fields"] == []
+        assert txs[0]["manual_edited"] is True
+    finally:
+        await client.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_api_edit_document_number_and_date_change_the_item_history(warehouse_env):
+    """Правка номера й дати документа видна в історії транзакцій позиції у вкладці «Склад»."""
+    db, fs, vs = warehouse_env
+    doc_id, item_id = _doc_with_income(db)
+    client = await _web_client(warehouse_env)
+
+    try:
+        await _edit_field(client, doc_id, "doc_number", "0002199")
+        await _edit_field(client, doc_id, "doc_date", "01.09.2026")
+
+        txs = await (await client.get(f"/api/warehouse/items/{item_id}/transactions")).json()
+        assert txs[0]["doc_number"] == "0002199"
+        assert txs[0]["doc_date"] == "01.09.2026"
+        assert txs[0]["document_number"] == "0002199"
+        assert txs[0]["document_date"] == "01.09.2026"
+    finally:
+        await client.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_api_edit_document_type_flips_the_operation_direction(warehouse_env):
+    """Зміна типу документа перераховує напрямок операцій усіх його транзакцій."""
+    db, fs, vs = warehouse_env
+    doc_id, item_id = _doc_with_income(db, requested_by="комірник (ПІБ)")
+    client = await _web_client(warehouse_env)
+
+    try:
+        await _edit_field(client, doc_id, "doc_type", "ВИМОГА")
+
+        txs = await (await client.get(f"/api/warehouse/items/{item_id}/transactions")).json()
+        assert txs[0]["operation_type"] == "expense"
+        items = await (await client.get("/api/warehouse/items")).json()
+        assert items[0]["balance"] == -10.0
+
+        await _edit_field(client, doc_id, "doc_type", "НАКЛАДНА")
+
+        txs = await (await client.get(f"/api/warehouse/items/{item_id}/transactions")).json()
+        assert txs[0]["operation_type"] == "income"
+        items = await (await client.get("/api/warehouse/items")).json()
+        assert items[0]["balance"] == 10.0
+    finally:
+        await client.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_api_edit_document_moves_it_in_and_out_of_the_balances(warehouse_env):
+    """Дозаповнення останнього поля вводить документ в облік, стирання поля — виводить."""
+    db, fs, vs = warehouse_env
+    doc_id, item_id = _doc_with_income(db, requested_by="")
+    client = await _web_client(warehouse_env)
+
+    try:
+        items = await (await client.get("/api/warehouse/items")).json()
+        txs = await (await client.get(f"/api/warehouse/items/{item_id}/transactions")).json()
+        assert items[0]["balance"] == 0.0
+        assert items[0]["doc_count"] == 0
+        assert txs[0]["accounted"] is False
+
+        filled = await _edit_field(client, doc_id, "requested_by", "комірник (ПІБ)")
+
+        assert (await filled.json())["document"]["missing_fields"] == []
+        items = await (await client.get("/api/warehouse/items")).json()
+        txs = await (await client.get(f"/api/warehouse/items/{item_id}/transactions")).json()
+        assert items[0]["balance"] == 10.0
+        assert items[0]["doc_count"] == 1
+        assert txs[0]["accounted"] is True
+
+        cleared = await _edit_field(client, doc_id, "requested_by", "")
+
+        assert (await cleared.json())["document"]["missing_fields"] == ["Затребував"]
+        items = await (await client.get("/api/warehouse/items")).json()
+        txs = await (await client.get(f"/api/warehouse/items/{item_id}/transactions")).json()
+        assert items[0]["balance"] == 0.0
+        assert items[0]["doc_count"] == 0
+        assert txs[0]["accounted"] is False
+    finally:
+        await client.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_api_edit_document_writes_a_line_to_the_system_log(warehouse_env, caplog):
+    """Правка пише рядок у системний лог — із полем, значенням і коментарем."""
+    db, fs, vs = warehouse_env
+    doc_id, _ = _doc_with_income(db)
+    client = await _web_client(warehouse_env)
+
+    try:
+        with caplog.at_level(logging.INFO):
+            await _edit_field(client, doc_id, "doc_number", "0002199", "OCR помилився")
+
+        records = [r for r in caplog.records if r.name == "kolobot.web_server"]
+        assert records, "правка не залишила рядка в лог"
+        message = records[-1].getMessage()
+        assert "0000215" in message
+        assert "0002199" in message
+        assert "№ документа" in message
+        assert "OCR помилився" in message
+    finally:
+        await client.close()
+        db.close()
+
+
+# Виконує справжній JS сторінки в node: картка малюється, а правки йдуть на endpoint.
+# Оточення браузера підставляється до сторінки, сам сценарій — після неї.
+_DOC_EDIT_STUBS = """
+const fs = require('fs');
+const payload = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+
+const els = {};
+function el(id) {
+    if (!els[id]) {
+        const classes = new Set();
+        els[id] = {
+            id: id, innerHTML: '', textContent: '', innerText: '', value: '', type: '', style: {},
+            classList: {
+                add: c => classes.add(c),
+                remove: c => classes.delete(c),
+                toggle: (c, on) => { on ? classes.add(c) : classes.delete(c); },
+                contains: c => classes.has(c)
+            },
+            addEventListener() {}, removeAttribute() {}, setAttribute() {},
+            focus() {}, select() {}
+        };
+    }
+    return els[id];
+}
+globalThis.document = { getElementById: el, querySelectorAll: () => [], addEventListener() {} };
+globalThis.window = { EventSource: null, addEventListener() {} };
+globalThis.alert = () => {};
+globalThis.setInterval = () => 0;
+
+const requests = [];
+globalThis.fetch = async (url, opts) => {
+    if (opts && opts.method === 'POST') requests.push({ url: url, body: JSON.parse(opts.body) });
+    const body = url.indexOf('/ocr') !== -1 ? payload.card
+        : url.indexOf('/items') !== -1 ? payload.items
+        : url.indexOf('/documents') !== -1 ? payload.docs
+        : {};
+    return { ok: true, status: 200, json: async () => body };
+};
+"""
+
+_DOC_EDIT_DRIVER = """
+(async () => {
+    const docId = payload.card.id;
+    await fetchDocs();
+    await reloadDocImpact(docId);
+    const card = els['doc-impact-content-' + docId].innerHTML;
+
+    // тип документа обирається зі списку, а не вводиться текстом
+    openDocFieldModal(docId, 'doc_type');
+    const typeEditor = {
+        selectVisible: !el('edit-doc-type').classList.contains('hidden'),
+        inputHidden: el('edit-new-value').classList.contains('hidden'),
+        preselected: el('edit-doc-type').value
+    };
+
+    // користувач нічого не обрав — правка не йде
+    el('edit-doc-type').value = '';
+    await submitDocField();
+    const afterEmptyChoice = { requests: requests.length, error: el('edit-error').textContent };
+
+    el('edit-doc-type').value = payload.choice;
+    await submitDocField();
+
+    // текстове поле редагується полем вводу
+    openDocFieldModal(docId, 'requested_by');
+    const textEditor = {
+        selectHidden: el('edit-doc-type').classList.contains('hidden'),
+        inputVisible: !el('edit-new-value').classList.contains('hidden'),
+        currentValue: el('edit-new-value').value
+    };
+    el('edit-new-value').value = payload.text;
+    el('edit-comment').value = payload.comment;
+    await submitDocField();
+
+    // правка позиції складу не має піти на endpoint документа
+    openEditModal(7, 'name', 'Болт М8', 'Найменування');
+    const itemEditor = { docField: currentEditDocId, selectHidden: el('edit-doc-type').classList.contains('hidden') };
+
+    console.log(JSON.stringify({
+        card: card, typeEditor: typeEditor, textEditor: textEditor,
+        afterEmptyChoice: afterEmptyChoice, itemEditor: itemEditor, requests: requests
+    }));
+})();
+"""
+
+
+def _run_doc_edit(html, payload):
+    """Проганяє сторінку в node: рендер картки й обидва шляхи правки."""
+    page = html.split("<script>", 1)[1].split("</script>", 1)[0]
+    with tempfile.TemporaryDirectory() as tmp:
+        script = os.path.join(tmp, "doc_edit.js")
+        payload_path = os.path.join(tmp, "payload.json")
+        with open(script, "w", encoding="utf-8") as fh:
+            fh.write(_DOC_EDIT_STUBS + page + _DOC_EDIT_DRIVER)
+        with open(payload_path, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh)
+        proc = subprocess.run([NODE, script, payload_path],
+                              capture_output=True, text=True, encoding="utf-8")
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout)
+
+
+_DOC_EDIT_CARD = {
+    "id": 1,
+    "filename": "nakladna_0000215.jpg",
+    "file_type": "photo",
+    "doc_type": "НАКЛАДНА",
+    "doc_number": "0000215",
+    "doc_date": "15.08.2026",
+    "requested_by": "",
+    "requested_via": "7939 - (ПІБ)",
+    "raw_text": "НАКЛАДНА № 0000215",
+    "impact": [],
+    "status": "completed",
+    "error_message": "",
+}
+
+_DOC_EDIT_PAYLOAD = {
+    "card": _DOC_EDIT_CARD,
+    "docs": [dict(_DOC_EDIT_CARD, manual_edited=False, missing_fields=["Затребував"],
+                  transaction_count=0, uploaded_at=1.0)],
+    "items": [],
+    "choice": "ВИМОГА",
+    "text": "комірник (ПІБ)",
+    "comment": "OCR не прочитав",
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(NODE is None, reason="node недоступний — JS сторінки не виконати")
+async def test_document_card_has_a_pencil_in_every_recognition_field(warehouse_env):
+    """#31: у картці кожне з пʼяти полів має олівець — і заповнене, і порожнє."""
+    client, db, html = await _documents_page(warehouse_env)
+    try:
+        result = _run_doc_edit(html, _DOC_EDIT_PAYLOAD)
+        card = result["card"]
+
+        # олівець кожного поля відкриває редактор саме цього поля
+        for field in RECOGNITION_FIELDS:
+            assert f"openDocFieldModal(1, '{field}')" in card, field
+        assert card.count("openDocFieldModal(") == 5
+
+        # порожнє поле — прочерк з олівцем
+        assert '—</span><button onclick="event.stopPropagation(); openDocFieldModal(1, \'requested_by\')"' in card
+        # заповнене — значенням з олівцем
+        assert '0000215</span><button onclick="event.stopPropagation(); openDocFieldModal(1, \'doc_number\')"' in card
+
+        # усі пʼять полів бланка присутні в картці
+        for label in ("Тип", "№", "Дата", "Затребував", "Через кого"):
+            assert f"{label}:" in card, label
+    finally:
+        await client.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(NODE is None, reason="node недоступний — JS сторінки не виконати")
+async def test_document_card_edits_go_to_the_document_endpoint(warehouse_env):
+    """#31: тип документа обирається зі списку, текстові поля — полем вводу; обидва йдуть на свій endpoint."""
+    client, db, html = await _documents_page(warehouse_env)
+    try:
+        result = _run_doc_edit(html, _DOC_EDIT_PAYLOAD)
+
+        # тип документа: список із двох значень, поточне значення вже обране
+        assert result["typeEditor"] == {"selectVisible": True, "inputHidden": True, "preselected": "НАКЛАДНА"}
+        # без обраного типу правка не йде
+        assert result["afterEmptyChoice"]["requests"] == 0
+        assert result["afterEmptyChoice"]["error"]
+        # текстове поле: поле вводу замість списку, з поточним значенням
+        assert result["textEditor"] == {"selectHidden": True, "inputVisible": True, "currentValue": ""}
+        # правка позиції складу не перехоплюється редактором документа
+        assert result["itemEditor"] == {"docField": None, "selectHidden": True}
+
+        assert result["requests"] == [
+            {"url": "/api/warehouse/documents/1/edit",
+             "body": {"field": "doc_type", "value": "ВИМОГА", "comment": ""}},
+            {"url": "/api/warehouse/documents/1/edit",
+             "body": {"field": "requested_by", "value": "комірник (ПІБ)", "comment": "OCR не прочитав"}},
+        ]
+    finally:
+        await client.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_document_type_editor_offers_exactly_the_two_form_values(warehouse_env):
+    """#31: список типів документа містить рівно «НАКЛАДНА» і «ВИМОГА»."""
+    client, db, html = await _documents_page(warehouse_env)
+    try:
+        modal = html.split('id="edit-doc-type"', 1)[1].split("</select>", 1)[0]
+        assert modal.count("<option") == 2
+        assert '<option value="НАКЛАДНА">' in modal
+        assert '<option value="ВИМОГА">' in modal
+    finally:
+        await client.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_manual_edit_mark_is_rendered_in_documents_and_warehouse_rows(warehouse_env):
+    """#31: обидва рядки малюють позначку ручного редагування."""
+    client, db, html = await _documents_page(warehouse_env)
+    try:
+        docs_row = html.split("function renderDocs(docs)")[1].split("tbody.innerHTML = html;")[0]
+        assert "manualEditMark(doc.manual_edited)" in docs_row
+
+        tx_row = html.split("async function reloadTransactions(itemId)")[1].split("function toggleTransactions")[0]
+        assert "manualEditMark(tx.manual_edited)" in tx_row
+
+        mark = html.split("function manualEditMark(isEdited)")[1].split("\n}")[0]
+        assert "title=\"Правка вручну\"" in mark
     finally:
         await client.close()
         db.close()

@@ -7,7 +7,12 @@ import sqlite3
 
 import pytest
 
-from kolobot.warehouse_db import REQUIRED_DOC_FIELDS, WarehouseDB, missing_doc_fields
+from kolobot.warehouse_db import (
+    DOC_TYPE_VALUES,
+    REQUIRED_DOC_FIELDS,
+    WarehouseDB,
+    missing_doc_fields,
+)
 
 
 @pytest.fixture
@@ -984,6 +989,199 @@ def test_delete_document_still_removes_its_transactions(warehouse_db):
         "SELECT COUNT(*) FROM warehouse_transactions WHERE document_id = ?", (doc_id,)
     ).fetchone()[0]
     assert remaining == 0
+
+
+# =========================================================================
+# Ручне дозаповнення полів документа (Issue #31)
+# =========================================================================
+
+
+def _doc_with_transaction(db, **doc_overrides):
+    """Повністю розпізнаний документ із транзакцією на 10 одиниць; повертає (doc_id, item_id)."""
+    doc_id = _add_complete_photo_doc(db, **doc_overrides)
+    doc = db.get_document(doc_id)
+    item_id = db.add_item(name="Болт М8", sku="SKU-001", unit="шт")
+    db.add_transaction(
+        item_id=item_id, document_id=doc_id, operation_type="income", quantity=10.0,
+        doc_number=doc["doc_number"], doc_date=doc["doc_date"],
+    )
+    return doc_id, item_id
+
+
+@pytest.mark.parametrize(
+    "column", [column for _, column in REQUIRED_DOC_FIELDS]
+)
+def test_edit_document_field_updates_every_recognition_field(warehouse_db, column):
+    """Кожне з пʼяти полів бланка приймається правкою."""
+    doc_id = _add_complete_photo_doc(warehouse_db)
+    value = {
+        "doc_type": "ВИМОГА",
+        "doc_date": "15.09.2026",
+    }.get(column, "0000215")
+
+    result = warehouse_db.edit_document_field(doc_id, column, value)
+
+    assert result["success"] is True
+    assert result["field"] == column
+    assert result["new_value"] == value
+    assert warehouse_db.get_document(doc_id)[column] == value
+
+
+@pytest.mark.parametrize(
+    "field", ["filename", "file_path", "raw_text", "status", "uploaded_at", "manual_edited"]
+)
+def test_edit_document_field_rejects_anything_but_the_five_recognition_fields(warehouse_db, field):
+    """Будь-яке поле поза пʼятьма полями бланка відхиляється, документ лишається недоторканим."""
+    doc_id = _add_complete_photo_doc(warehouse_db)
+    before = warehouse_db.get_document(doc_id)
+
+    with pytest.raises(ValueError):
+        warehouse_db.edit_document_field(doc_id, field, "щось інше")
+
+    assert warehouse_db.get_document(doc_id) == before
+
+
+@pytest.mark.parametrize("doc_type", DOC_TYPE_VALUES)
+def test_edit_document_type_accepts_only_the_two_form_values(warehouse_db, doc_type):
+    """Тип документа приймає рівно «НАКЛАДНА» і «ВИМОГА»."""
+    doc_id = warehouse_db.add_document(filename="scan.jpg", file_type="photo")
+
+    result = warehouse_db.edit_document_field(doc_id, "doc_type", doc_type)
+
+    assert result["new_value"] == doc_type
+    assert warehouse_db.get_document(doc_id)["doc_type"] == doc_type
+
+
+@pytest.mark.parametrize("value", ["АКТ", "РАХУНОК", "НАКЛАДНА-ВИМОГА", "", "   ", "РУЧНЕ_КОРИГУВАННЯ"])
+def test_edit_document_type_rejects_any_other_value(warehouse_db, value):
+    """Жодне інше значення типу документа не приймається — зокрема й порожнє."""
+    doc_id = _add_complete_photo_doc(warehouse_db)
+
+    with pytest.raises(ValueError):
+        warehouse_db.edit_document_field(doc_id, "doc_type", value)
+
+    assert warehouse_db.get_document(doc_id)["doc_type"] == "НАКЛАДНА"
+
+
+def test_edit_document_field_returns_none_for_unknown_document(warehouse_db):
+    """Невідомий документ — не помилка валідації, а відсутній результат."""
+    assert warehouse_db.edit_document_field(999, "doc_number", "1") is None
+
+
+def test_edit_document_field_strips_surrounding_whitespace(warehouse_db):
+    """Пробіли навколо значення не роблять поле заповненим — так само, як і в правилі обліку."""
+    doc_id = _add_complete_photo_doc(warehouse_db, requested_by="")
+
+    result = warehouse_db.edit_document_field(doc_id, "requested_by", "  комірник (ПІБ)  ")
+
+    assert result["new_value"] == "комірник (ПІБ)"
+    assert result["document"]["missing_fields"] == []
+
+
+@pytest.mark.parametrize("column", [column for _, column in REQUIRED_DOC_FIELDS])
+def test_every_successful_edit_marks_the_document_as_manually_edited(warehouse_db, column):
+    """Будь-яка успішна правка ставить документу позначку ручного редагування."""
+    doc_id = _add_complete_photo_doc(warehouse_db)
+    other_id = _add_complete_photo_doc(warehouse_db, filename="nakladna_102.jpg", doc_number="102")
+    value = "ВИМОГА" if column == "doc_type" else "щось інше"
+
+    result = warehouse_db.edit_document_field(doc_id, column, value)
+
+    assert result["document"]["manual_edited"] is True
+    docs = {d["id"]: d for d in warehouse_db.get_documents()}
+    assert docs[doc_id]["manual_edited"] is True
+    assert docs[other_id]["manual_edited"] is False
+
+
+def test_edit_document_number_and_date_reach_the_document_transactions(warehouse_db):
+    """Вкладка «Склад» читає номер і дату з транзакцій — правка документа дістає й туди."""
+    doc_id, item_id = _doc_with_transaction(warehouse_db)
+
+    warehouse_db.edit_document_field(doc_id, "doc_number", "0000215")
+    warehouse_db.edit_document_field(doc_id, "doc_date", "15.09.2026")
+
+    tx = warehouse_db.get_item_transactions(item_id)[0]
+    assert tx["doc_number"] == "0000215"
+    assert tx["doc_date"] == "15.09.2026"
+    assert tx["document_number"] == "0000215"
+    assert tx["document_date"] == "15.09.2026"
+    assert warehouse_db.get_document_impact(doc_id)[0]["doc_number"] == "0000215"
+
+
+def test_edit_document_number_does_not_touch_transactions_of_other_documents(warehouse_db):
+    """Правка документа поширюється лише на його власні транзакції."""
+    item_id = warehouse_db.add_item(name="Болт М8", sku="SKU-001", unit="шт")
+    target_doc = _add_complete_photo_doc(warehouse_db)
+    other_doc = _add_complete_photo_doc(warehouse_db, filename="nakladna_102.jpg", doc_number="102")
+    for doc_id in (target_doc, other_doc):
+        warehouse_db.add_transaction(
+            item_id=item_id, document_id=doc_id, operation_type="income", quantity=1.0,
+            doc_number="102",
+        )
+
+    warehouse_db.edit_document_field(target_doc, "doc_number", "0000215")
+
+    numbers = {tx["id"]: tx["doc_number"] for tx in warehouse_db.get_item_transactions(item_id)}
+    assert numbers == {1: "0000215", 2: "102"}
+
+
+def test_edit_document_type_recomputes_the_direction_of_every_transaction(warehouse_db):
+    """Тип документа вирішує, прихід це чи розхід: зміна типу перераховує напрямок операцій."""
+    doc_id, item_id = _doc_with_transaction(warehouse_db)
+    assert warehouse_db.get_item_balance(item_id) == 10.0
+
+    result = warehouse_db.edit_document_field(doc_id, "doc_type", "ВИМОГА")
+
+    assert result["transactions_updated"] == 1
+    assert warehouse_db.get_document_impact(doc_id)[0]["operation_type"] == "expense"
+    assert warehouse_db.get_item_transactions(item_id)[0]["operation_type"] == "expense"
+    assert warehouse_db.get_item_balance(item_id) == -10.0
+
+    warehouse_db.edit_document_field(doc_id, "doc_type", "НАКЛАДНА")
+
+    assert warehouse_db.get_document_impact(doc_id)[0]["operation_type"] == "income"
+    assert warehouse_db.get_item_balance(item_id) == 10.0
+
+
+def test_filling_the_last_missing_field_brings_the_document_into_the_balances(warehouse_db):
+    """Щойно заповнено останнє порожнє поле — документ входить в облік сам, без інших дій."""
+    doc_id, item_id = _doc_with_transaction(warehouse_db, requested_by="")
+    assert warehouse_db.get_item_balance(item_id) == 0.0
+    assert warehouse_db.get_item_transactions(item_id)[0]["accounted"] is False
+
+    result = warehouse_db.edit_document_field(doc_id, "requested_by", "комірник (ПІБ)")
+
+    assert result["document"]["missing_fields"] == []
+    assert warehouse_db.get_item_balance(item_id) == 10.0
+    assert warehouse_db.get_item_transactions(item_id)[0]["accounted"] is True
+    item = next(i for i in warehouse_db.get_items_with_balance() if i["id"] == item_id)
+    assert item["doc_count"] == 1
+
+
+def test_clearing_a_field_takes_the_document_out_of_the_balances(warehouse_db):
+    """Стирання поля повертає документ у «не в обліку»: транзакції лишаються, залишок — ні."""
+    doc_id, item_id = _doc_with_transaction(warehouse_db)
+    assert warehouse_db.get_item_balance(item_id) == 10.0
+
+    result = warehouse_db.edit_document_field(doc_id, "requested_by", "")
+
+    assert result["document"]["missing_fields"] == ["Затребував"]
+    assert warehouse_db.get_item_balance(item_id) == 0.0
+    assert warehouse_db.get_item_transactions(item_id)[0]["accounted"] is False
+    assert len(warehouse_db.get_document_impact(doc_id)) == 1
+    item = next(i for i in warehouse_db.get_items_with_balance() if i["id"] == item_id)
+    assert item["doc_count"] == 0
+
+
+def test_manual_edit_mark_is_visible_in_documents_and_item_transactions(warehouse_db):
+    """Позначку ручного редагування видно і в таблиці документів, і на рядку документа у «Складі»."""
+    doc_id, item_id = _doc_with_transaction(warehouse_db, requested_by="")
+
+    warehouse_db.edit_document_field(doc_id, "requested_by", "комірник (ПІБ)")
+
+    docs = {d["id"]: d for d in warehouse_db.get_documents()}
+    assert docs[doc_id]["manual_edited"] is True
+    assert warehouse_db.get_item_transactions(item_id)[0]["manual_edited"] is True
 
 
 

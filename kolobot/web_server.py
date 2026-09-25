@@ -521,6 +521,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
                 <div>
                     <label id="edit-field-label" class="block text-xs font-semibold text-slate-300 mb-1">Нове значення:</label>
                     <input type="text" id="edit-new-value" class="w-full bg-slate-900 text-slate-100 p-2.5 rounded-xl border border-slate-700 focus:outline-none focus:border-blue-500 text-sm transition" placeholder="Введіть нове значення...">
+                    <!-- Тип документа обирається зі списку, а не вводиться текстом -->
+                    <select id="edit-doc-type" class="hidden w-full bg-slate-900 text-slate-100 p-2.5 rounded-xl border border-slate-700 focus:outline-none focus:border-blue-500 text-sm transition">
+                        <option value="НАКЛАДНА">НАКЛАДНА (прихід)</option>
+                        <option value="ВИМОГА">ВИМОГА (розхід)</option>
+                    </select>
                 </div>
                 <div>
                     <label class="block text-xs font-semibold text-slate-400 mb-1">Коментар / причина зміни (необов'язково):</label>
@@ -699,7 +704,113 @@ function renderItems(items) {
 let currentEditItemId = null;
 let currentEditField = null;
 
+// ---- Ручне дозаповнення полів документа (#31) ----
+// Пʼять полів розпізнавання, які користувач править у розгорнутій картці документа.
+// Правка йде тим самим модальним вікном, що й позиції складу, але іншим endpointʼом.
+const DOC_FIELD_LABELS = {
+    doc_type: 'Тип документу',
+    doc_number: '№ документа',
+    doc_date: 'Дата документа',
+    requested_by: 'Затребував',
+    requested_via: 'Через кого'
+};
+let currentEditDocId = null;
+let currentEditDocField = null;
+
+function openDocFieldModal(docId, field) {
+    const doc = allDocs.find(d => d.id === docId);
+    if (!doc) return;
+    currentEditItemId = null;
+    currentEditField = null;
+    currentEditDocId = docId;
+    currentEditDocField = field;
+
+    const label = DOC_FIELD_LABELS[field] || field;
+    const currentVal = doc[field] || '';
+    const isDocType = (field === 'doc_type');
+    document.getElementById('edit-modal-title').textContent = 'Документ: ' + label;
+    document.getElementById('edit-field-label').textContent = isDocType
+        ? 'Тип документа:'
+        : 'Нове значення (' + label + '):';
+    document.getElementById('edit-current-value').textContent = currentVal !== '' ? currentVal : '(не встановлено)';
+
+    const inputVal = document.getElementById('edit-new-value');
+    const selectVal = document.getElementById('edit-doc-type');
+    inputVal.classList.toggle('hidden', isDocType);
+    selectVal.classList.toggle('hidden', !isDocType);
+    if (isDocType) {
+        // порожнє значення не має жодного з двох пунктів — користувач обирає тип явно
+        selectVal.value = currentVal;
+    } else {
+        inputVal.type = 'text';
+        inputVal.removeAttribute('step');
+        inputVal.removeAttribute('min');
+        inputVal.placeholder = 'Введіть нове значення...';
+        inputVal.value = currentVal;
+    }
+    document.getElementById('edit-comment').value = '';
+    const errEl = document.getElementById('edit-error');
+    errEl.classList.add('hidden');
+    errEl.textContent = '';
+    document.getElementById('edit-modal').classList.remove('hidden');
+    if (!isDocType) setTimeout(() => { inputVal.focus(); inputVal.select(); }, 50);
+}
+
+async function submitDocField() {
+    const docId = currentEditDocId;
+    const field = currentEditDocField;
+    const saveBtn = document.getElementById('edit-save-btn');
+    const errEl = document.getElementById('edit-error');
+    const isDocType = (field === 'doc_type');
+    const newVal = isDocType
+        ? document.getElementById('edit-doc-type').value
+        : document.getElementById('edit-new-value').value;
+    const comment = document.getElementById('edit-comment').value;
+
+    errEl.classList.add('hidden');
+    if (isDocType && !newVal) {
+        errEl.textContent = 'Оберіть тип документа зі списку';
+        errEl.classList.remove('hidden');
+        return;
+    }
+    const impactRow = document.getElementById('doc-impact-row-' + docId);
+    const wasOpen = !!impactRow && !impactRow.classList.contains('hidden');
+
+    saveBtn.disabled = true;
+    saveBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> <span>Збереження...</span>';
+    try {
+        const res = await fetch('/api/warehouse/documents/' + docId + '/edit', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ field: field, value: newVal, comment: comment })
+        });
+        const data = await res.json();
+        if (!res.ok || data.error) {
+            errEl.textContent = data.error || 'Помилка збереження';
+            errEl.classList.remove('hidden');
+            return;
+        }
+
+        closeEditModal();
+        // Правка номера, дати чи типу дістає транзакції документа, а дозаповнення
+        // останнього поля вводить документ в облік — тож оновлюємо обидві вкладки.
+        // Перемальовування таблиці згортає картку, тому розгортаємо її назад.
+        await refreshAll();
+        if (wasOpen) await toggleDocImpact(docId);
+    } catch(e) {
+        errEl.textContent = 'Помилка: ' + e.message;
+        errEl.classList.remove('hidden');
+    } finally {
+        saveBtn.disabled = false;
+        saveBtn.innerHTML = '<i class="fa-solid fa-check"></i> <span>Зберегти</span>';
+    }
+}
+
 function openEditModal(itemId, field, currentVal, fieldLabel) {
+    currentEditDocId = null;
+    currentEditDocField = null;
+    document.getElementById('edit-doc-type').classList.add('hidden');
+    document.getElementById('edit-new-value').classList.remove('hidden');
     currentEditItemId = itemId;
     currentEditField = field;
     const isQty = (field === 'balance' || field === 'quantity');
@@ -744,10 +855,13 @@ function openEditModal(itemId, field, currentVal, fieldLabel) {
 function closeEditModal() {
     currentEditItemId = null;
     currentEditField = null;
+    currentEditDocId = null;
+    currentEditDocField = null;
     document.getElementById('edit-modal').classList.add('hidden');
 }
 
 async function submitEditField() {
+    if (currentEditDocId) return submitDocField();
     if (!currentEditItemId || !currentEditField) return;
     const saveBtn = document.getElementById('edit-save-btn');
     const errEl = document.getElementById('edit-error');
@@ -899,7 +1013,7 @@ async function reloadTransactions(itemId) {
                 docDisplay = `<button onclick="event.stopPropagation(); viewDocument(${tx.document_id}, '${esc(tx.filename)}', '${tx.file_type}', '${esc(tx.source_row)}')"
                     class="text-slate-400 hover:text-blue-400 transition">
                     ${fileIcon} <span class="ml-1">${esc(tx.filename)}</span>
-                </button>`;
+                </button>${manualEditMark(tx.manual_edited)}`;
             }
             h += `<tr class="border-t border-slate-800/30">
                 <td class="py-2 pr-3 text-slate-300" data-label="Дата">${esc(date)}</td>
@@ -1280,7 +1394,7 @@ function renderDocs(docs) {
         <tr class="hover:bg-slate-800/40 transition cursor-pointer" onclick="toggleDocImpact(${doc.id})">
             <td class="py-4 px-3"><i id="doc-chevron-${doc.id}" class="fa-solid fa-chevron-right text-[10px] text-slate-500 transition-transform"></i></td>
             <td class="py-4 px-3" data-label="Превʼю">${previewBtn}</td>
-            <td class="py-4 px-3 font-medium text-slate-200 break-words" data-label="Файл">${esc(doc.filename)}</td>
+            <td class="py-4 px-3 font-medium text-slate-200 break-words" data-label="Файл">${esc(doc.filename)}${manualEditMark(doc.manual_edited)}</td>
             <td class="py-4 px-3" data-label="Тип"><span class="px-2 py-0.5 rounded-full text-[11px] font-medium badge-import">${typeLabel}</span></td>
             <td class="py-4 px-3" data-label="Тип документу">${docTypeBadge}</td>
             <td class="py-4 px-3" data-label="Статус">${docStatusBadge(doc)}</td>
@@ -1347,21 +1461,23 @@ async function reloadDocImpact(docId) {
             h += '<div class="lg:col-span-8 space-y-3">';
 
             // Meta bar — усі пʼять полів розпізнавання рендеряться завжди: значення або прочерк.
-            const metaField = (label, valueHtml) => '<span class="text-xs text-slate-300"><span class="text-slate-500">' + label + ':</span> ' + valueHtml + '</span>';
+            // Олівець має кожне поле — і заповнене, і порожнє: саме ним поле дозаповнюють.
+            const docFieldPencil = (field, label) => '<button onclick="event.stopPropagation(); openDocFieldModal(' + docId + ', \'' + field + '\')" class="text-slate-500 hover:text-blue-400 p-0.5 rounded transition" title="Редагувати: ' + label + '"><i class="fa-solid fa-pencil text-[10px]"></i></button>';
+            const metaField = (label, valueHtml, field) => '<span class="text-xs text-slate-300 inline-flex items-center gap-1"><span class="text-slate-500">' + label + ':</span> ' + valueHtml + docFieldPencil(field, label) + '</span>';
             const metaDash = '<span class="text-slate-600">—</span>';
             h += '<div class="glass rounded-xl p-3 border border-slate-800 flex flex-wrap items-center justify-between gap-2 bg-slate-900/60">';
             h += '<div class="flex items-center gap-3">';
             const dt = (data.doc_type || '').toUpperCase();
             if (dt) {
                 const badge = dt === 'НАКЛАДНА' ? 'badge-nakladna' : (dt === 'ВИМОГА' ? 'badge-vymoha' : 'badge-import');
-                h += metaField('Тип', '<span class="px-2.5 py-0.5 rounded-full text-xs font-semibold ' + badge + '">' + esc(dt) + '</span>');
+                h += metaField('Тип', '<span class="px-2.5 py-0.5 rounded-full text-xs font-semibold ' + badge + '">' + esc(dt) + '</span>', 'doc_type');
             } else {
-                h += metaField('Тип', metaDash);
+                h += metaField('Тип', metaDash, 'doc_type');
             }
-            h += metaField('№', data.doc_number ? '<span class="font-mono font-bold text-slate-200">' + esc(data.doc_number) + '</span>' : metaDash);
-            h += metaField('Дата', data.doc_date ? esc(data.doc_date) : metaDash);
-            h += metaField('Затребував', data.requested_by ? '<span class="text-amber-200">' + esc(data.requested_by) + '</span>' : metaDash);
-            h += metaField('Через кого', data.requested_via ? '<span class="text-amber-200">' + esc(data.requested_via) + '</span>' : metaDash);
+            h += metaField('№', data.doc_number ? '<span class="font-mono font-bold text-slate-200">' + esc(data.doc_number) + '</span>' : metaDash, 'doc_number');
+            h += metaField('Дата', data.doc_date ? esc(data.doc_date) : metaDash, 'doc_date');
+            h += metaField('Затребував', data.requested_by ? '<span class="text-amber-200">' + esc(data.requested_by) + '</span>' : metaDash, 'requested_by');
+            h += metaField('Через кого', data.requested_via ? '<span class="text-amber-200">' + esc(data.requested_via) + '</span>' : metaDash, 'requested_via');
             h += '</div>';
             if (rawText) {
                 h += '<button onclick="copyTextDirect(\'ocr-acc-text-' + docId + '\', this)" class="px-2.5 py-1 text-xs text-slate-400 hover:text-slate-200 bg-slate-800 hover:bg-slate-700 rounded-lg transition flex items-center gap-1"><i class="fa-solid fa-copy"></i><span>Копіювати текст</span></button>';
@@ -1928,6 +2044,11 @@ function getFileIcon(ft) {
 function fmtRequestedBy(v) {
     return v ? esc(v) : '<span class="text-slate-600">—</span>';
 }
+// Позначка ручного редагування: документ, у який втручався користувач.
+function manualEditMark(isEdited) {
+    if (!isEdited) return '';
+    return ' <span class="text-amber-400" title="Правка вручну"><i class="fa-solid fa-pen"></i></span>';
+}
 
 // ---- Log Console Logic ----
 
@@ -2184,6 +2305,7 @@ class WebServer:
         self._app.router.add_patch("/api/warehouse/items/{item_id}", self._api_edit_item)
         self._app.router.add_post("/api/warehouse/items/{item_id}", self._api_edit_item)
         self._app.router.add_get("/api/warehouse/documents", self._api_documents)
+        self._app.router.add_post("/api/warehouse/documents/{doc_id}/edit", self._api_edit_document)
         self._app.router.add_post("/api/warehouse/documents/{doc_id}/retry", self._api_retry_document)
         self._app.router.add_get("/api/warehouse/documents/{doc_id}/impact", self._api_document_impact)
         self._app.router.add_get("/api/warehouse/documents/{doc_id}/ocr", self._api_document_ocr)
@@ -2319,6 +2441,52 @@ class WebServer:
     async def _api_documents(self, request: web.Request) -> web.Response:
         docs = self._db.get_documents()
         return web.json_response(docs)
+
+    async def _api_edit_document(self, request: web.Request) -> web.Response:
+        """Ручне дозаповнення одного з пʼяти полів розпізнавання документа."""
+        try:
+            doc_id = int(request.match_info["doc_id"])
+        except (KeyError, ValueError):
+            return web.json_response({"error": "Некоректний ID документа"}, status=400)
+
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"error": "Некоректний JSON"}, status=400)
+
+        if not isinstance(data, dict):
+            return web.json_response({"error": "Тіло запиту має бути JSON об'єктом"}, status=400)
+
+        field = data.get("field")
+        if not field:
+            return web.json_response({"error": "Не вказано поле для редагування ('field')"}, status=400)
+
+        if "value" not in data:
+            return web.json_response({"error": "Не вказано значення ('value')"}, status=400)
+
+        comment = str(data.get("comment") or "").strip()
+        try:
+            result = self._db.edit_document_field(
+                doc_id=doc_id,
+                field=str(field),
+                value=data.get("value"),
+            )
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+
+        if not result:
+            return web.json_response({"error": "Документ не знайдено"}, status=404)
+
+        logger.info(
+            "[Документ %d] Ручна правка [%s]: '%s' → '%s'%s (транзакцій оновлено: %d)",
+            doc_id,
+            result["label"],
+            result["old_value"],
+            result["new_value"],
+            f", коментар: {comment}" if comment else "",
+            result["transactions_updated"],
+        )
+        return web.json_response(result)
 
     async def _api_retry_document(self, request: web.Request) -> web.Response:
         try:
