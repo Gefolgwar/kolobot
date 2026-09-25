@@ -73,6 +73,33 @@ def test_page_matches_pre_refactor_html():
     assert PAGE == literal.replace("\r\n", "\n")
 
 
+def _pre_split_script():
+    """``ui/js/page.js`` as it stands in ``git show HEAD``, or ``None`` once the
+    split has landed and HEAD serves the 17 modules in its place."""
+    done = subprocess.run(
+        ["git", "show", "HEAD:kolobot/web/ui/js/page.js"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    if done.returncode != 0:
+        return None
+    return done.stdout.replace("\r\n", "\n")
+
+
+def test_page_unchanged_by_the_js_split():
+    """Migration gate: the 17 modules join back into the script they were cut from.
+
+    Deleted with the other ``git show HEAD:`` tests once the series lands; until
+    then it is the one check that the cut was verbatim.
+    """
+    page_js = _pre_split_script()
+    if page_js is None:
+        pytest.skip("HEAD carries no ui/js/page.js: the split has landed")
+    assert _script_block(PAGE) == page_js
+
+
 def test_script_tag_content_equals_frontend_js():
     """The invariant every node-driven test of the page depends on."""
     assert _script_block(PAGE) == "\n".join(JS.values())
@@ -82,9 +109,27 @@ def test_every_asset_reaches_the_page():
     """Each file under ``ui/`` is served — a typo'd directory would otherwise
     ship a page with no CSS and nothing would notice."""
     files = sorted(path for path in UI_DIR.rglob("*") if path.is_file())
-    assert {"shell.html", "app.css", "js/page.js"} <= {
-        path.relative_to(UI_DIR).as_posix() for path in files
-    }
+    assert {
+        "shell.html",
+        "app.css",
+        "js/01-core.js",
+        "js/02-items_table.js",
+        "js/03-document_fields.js",
+        "js/04-item_edit_modal.js",
+        "js/05-item_transactions.js",
+        "js/06-items_filters.js",
+        "js/07-document_status.js",
+        "js/08-document_sort.js",
+        "js/09-document_marks.js",
+        "js/10-documents_render.js",
+        "js/11-document_impact.js",
+        "js/12-import_export.js",
+        "js/13-document_viewer.js",
+        "js/14-ocr_panel.js",
+        "js/15-document_delete.js",
+        "js/16-logs.js",
+        "js/17-boot.js",
+    } <= {path.relative_to(UI_DIR).as_posix() for path in files}
 
     for path in files:
         source = path.read_text(encoding="utf-8")
