@@ -37,7 +37,7 @@ def warehouse_env(tmp_path):
 async def test_web_server_index(warehouse_env):
     db, fs, vs = warehouse_env
     server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
-    client = TestClient(TestServer(server._app))
+    client = TestClient(TestServer(server.app))
     await client.start_server()
 
     try:
@@ -59,7 +59,7 @@ async def test_web_server_index(warehouse_env):
 async def test_api_items_empty(warehouse_env):
     db, fs, vs = warehouse_env
     server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
-    client = TestClient(TestServer(server._app))
+    client = TestClient(TestServer(server.app))
     await client.start_server()
 
     try:
@@ -76,7 +76,7 @@ async def test_api_items_empty(warehouse_env):
 async def test_api_documents_empty(warehouse_env):
     db, fs, vs = warehouse_env
     server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
-    client = TestClient(TestServer(server._app))
+    client = TestClient(TestServer(server.app))
     await client.start_server()
 
     try:
@@ -103,7 +103,7 @@ async def test_api_documents_with_doc_type(warehouse_env):
     )
 
     server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
-    client = TestClient(TestServer(server._app))
+    client = TestClient(TestServer(server.app))
     await client.start_server()
 
     try:
@@ -134,7 +134,7 @@ async def test_api_delete_document(warehouse_env):
     doc_id = db.add_document(filename="del.xlsx", file_type="excel")
 
     server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
-    client = TestClient(TestServer(server._app))
+    client = TestClient(TestServer(server.app))
     await client.start_server()
 
     try:
@@ -154,7 +154,7 @@ async def test_api_delete_document(warehouse_env):
 async def test_documents_panel_renders_queued_status_column(warehouse_env):
     db, fs, vs = warehouse_env
     server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
-    client = TestClient(TestServer(server._app))
+    client = TestClient(TestServer(server.app))
     await client.start_server()
 
     try:
@@ -181,7 +181,7 @@ async def test_api_queued_document_exposes_status_and_preview(warehouse_env, tmp
     )
 
     server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
-    client = TestClient(TestServer(server._app))
+    client = TestClient(TestServer(server.app))
     await client.start_server()
 
     try:
@@ -209,7 +209,7 @@ async def test_api_completed_document_reports_completed_status(warehouse_env):
     doc_id = db.add_document(filename="done.jpg", file_type="photo", raw_text="текст")
 
     server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
-    client = TestClient(TestServer(server._app))
+    client = TestClient(TestServer(server.app))
     await client.start_server()
 
     try:
@@ -230,7 +230,7 @@ async def test_web_server_processing_status_badges(warehouse_env):
     doc2 = db.add_document(filename="d2.jpg", file_type="photo", status="processing_emb")
 
     server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
-    client = TestClient(TestServer(server._app))
+    client = TestClient(TestServer(server.app))
     await client.start_server()
 
     try:
@@ -272,7 +272,7 @@ async def test_api_document_ocr(warehouse_env):
     )
 
     server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
-    client = TestClient(TestServer(server._app))
+    client = TestClient(TestServer(server.app))
     await client.start_server()
 
     try:
@@ -309,7 +309,7 @@ async def test_api_document_ocr_from_txt_file(warehouse_env, tmp_path):
     )
 
     server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
-    client = TestClient(TestServer(server._app))
+    client = TestClient(TestServer(server.app))
     await client.start_server()
 
     try:
@@ -334,7 +334,7 @@ async def test_api_edit_item_metadata_post(warehouse_env):
     db.add_transaction(item_id=item_id, document_id=doc_id, operation_type="income", quantity=100)
 
     server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
-    client = TestClient(TestServer(server._app))
+    client = TestClient(TestServer(server.app))
     await client.start_server()
 
     try:
@@ -373,7 +373,7 @@ async def test_api_edit_item_metadata_patch(warehouse_env):
     db.add_transaction(item_id=item_id, document_id=doc_id, operation_type="income", quantity=25)
 
     server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
-    client = TestClient(TestServer(server._app))
+    client = TestClient(TestServer(server.app))
     await client.start_server()
 
     try:
@@ -395,7 +395,7 @@ async def test_api_edit_item_errors(warehouse_env):
     item_id = db.add_item(name="Дріт мідний")
 
     server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
-    client = TestClient(TestServer(server._app))
+    client = TestClient(TestServer(server.app))
     await client.start_server()
 
     try:
@@ -429,7 +429,7 @@ async def test_api_adjust_item_quantity_success_income(warehouse_env):
     db.add_transaction(item_id=item_id, document_id=doc_id, operation_type="income", quantity=50)
 
     server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
-    client = TestClient(TestServer(server._app))
+    client = TestClient(TestServer(server.app))
     await client.start_server()
 
     try:
@@ -474,7 +474,7 @@ async def test_api_adjust_item_quantity_success_expense(warehouse_env):
     db.add_transaction(item_id=item_id, document_id=doc_id, operation_type="income", quantity=100)
 
     server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
-    client = TestClient(TestServer(server._app))
+    client = TestClient(TestServer(server.app))
     await client.start_server()
 
     try:
@@ -507,7 +507,7 @@ async def test_api_adjust_item_quantity_invalid_number(warehouse_env):
     item_id = db.add_item(name="Гайка М6")
 
     server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
-    client = TestClient(TestServer(server._app))
+    client = TestClient(TestServer(server.app))
     await client.start_server()
 
     try:
@@ -534,7 +534,7 @@ async def test_api_adjust_item_quantity_and_excel_export_reconciliation(warehous
     db.add_transaction(item_id=item2_id, document_id=doc_id, operation_type="income", quantity=100)
 
     server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
-    client = TestClient(TestServer(server._app))
+    client = TestClient(TestServer(server.app))
     await client.start_server()
 
     try:
@@ -597,7 +597,7 @@ async def test_api_adjust_item_quantity_and_excel_export_reconciliation(warehous
 async def test_web_server_log_tab_html(warehouse_env):
     db, fs, vs = warehouse_env
     server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
-    client = TestClient(TestServer(server._app))
+    client = TestClient(TestServer(server.app))
     await client.start_server()
 
     try:
@@ -626,7 +626,7 @@ async def test_api_logs_and_clear(warehouse_env):
     db, fs, vs = warehouse_env
     log_buf = LogBuffer(maxlen=100)
     server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42, log_buffer=log_buf)
-    client = TestClient(TestServer(server._app))
+    client = TestClient(TestServer(server.app))
     await client.start_server()
 
     try:
@@ -701,7 +701,7 @@ async def test_api_logs_stream(warehouse_env):
     db, fs, vs = warehouse_env
     log_buf = LogBuffer(maxlen=100)
     server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42, log_buffer=log_buf)
-    client = TestClient(TestServer(server._app))
+    client = TestClient(TestServer(server.app))
     await client.start_server()
 
     try:
@@ -753,7 +753,7 @@ async def test_document_inspection_item_edit_integration(warehouse_env):
     )
 
     server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
-    client = TestClient(TestServer(server._app))
+    client = TestClient(TestServer(server.app))
     await client.start_server()
 
     try:
@@ -842,7 +842,7 @@ async def test_document_inspection_quantity_edit_integration(warehouse_env):
     )
 
     server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
-    client = TestClient(TestServer(server._app))
+    client = TestClient(TestServer(server.app))
     await client.start_server()
 
     try:
@@ -904,7 +904,7 @@ async def test_document_inspection_multi_item_edit_integration(warehouse_env):
     db.add_transaction(item_id=item2_id, document_id=doc_id, operation_type="income", quantity=150.0)
 
     server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
-    client = TestClient(TestServer(server._app))
+    client = TestClient(TestServer(server.app))
     await client.start_server()
 
     try:
@@ -972,7 +972,7 @@ async def test_document_inspection_multi_item_edit_integration(warehouse_env):
 async def test_web_server_index_min_balance_column_and_filter(warehouse_env):
     db, fs, vs = warehouse_env
     server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
-    client = TestClient(TestServer(server._app))
+    client = TestClient(TestServer(server.app))
     await client.start_server()
 
     try:
@@ -996,7 +996,7 @@ async def test_api_edit_min_balance_post_and_patch(warehouse_env):
     db.add_transaction(item_id=item_id, document_id=doc_id, operation_type="income", quantity=50)
 
     server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
-    client = TestClient(TestServer(server._app))
+    client = TestClient(TestServer(server.app))
     await client.start_server()
 
     try:
@@ -1034,7 +1034,7 @@ async def test_api_edit_min_balance_invalid_number(warehouse_env):
     item_id = db.add_item(name="Тестовий товар")
 
     server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
-    client = TestClient(TestServer(server._app))
+    client = TestClient(TestServer(server.app))
     await client.start_server()
 
     try:
@@ -1059,7 +1059,7 @@ async def test_api_min_balance_excel_export_and_import(warehouse_env, tmp_path):
     db.add_transaction(item_id=item1_id, document_id=doc_id, operation_type="income", quantity=10.0)
 
     server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
-    client = TestClient(TestServer(server._app))
+    client = TestClient(TestServer(server.app))
     await client.start_server()
 
     try:
@@ -1114,7 +1114,7 @@ async def test_api_documents_and_transactions_expose_requested_by(warehouse_env)
     )
 
     server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
-    client = TestClient(TestServer(server._app))
+    client = TestClient(TestServer(server.app))
     await client.start_server()
 
     try:
@@ -1139,7 +1139,7 @@ async def test_documents_table_has_requested_by_column(warehouse_env):
     """"Документи" мають однойменну колонку, "Склад" — колонку в таблиці транзакцій."""
     db, fs, vs = warehouse_env
     server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
-    client = TestClient(TestServer(server._app))
+    client = TestClient(TestServer(server.app))
     await client.start_server()
 
     try:
@@ -1159,7 +1159,7 @@ async def test_table_fields_wrap_instead_of_truncating(warehouse_env):
     """Табличні поля переносяться рядками, а не обрізаються трикрапкою."""
     db, fs, vs = warehouse_env
     server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
-    client = TestClient(TestServer(server._app))
+    client = TestClient(TestServer(server.app))
     await client.start_server()
 
     try:
@@ -1195,7 +1195,7 @@ async def test_tables_use_compact_cells(warehouse_env):
     """Обидві таблиці компактизовано, а правила мають !important."""
     db, fs, vs = warehouse_env
     server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
-    client = TestClient(TestServer(server._app))
+    client = TestClient(TestServer(server.app))
     await client.start_server()
 
     try:
@@ -1224,7 +1224,7 @@ async def test_documents_table_has_card_mode_markup(warehouse_env):
     """Картковий режим нижче 1000px: маркер-клас, data-label і адаптивний CSS."""
     db, fs, vs = warehouse_env
     server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
-    client = TestClient(TestServer(server._app))
+    client = TestClient(TestServer(server.app))
     await client.start_server()
 
     try:
@@ -1269,7 +1269,7 @@ async def test_warehouse_table_has_card_mode_markup(warehouse_env):
     """Слайс #22: таблиця «Склад» стає картками, олівці видимі й стоять біля значення."""
     db, fs, vs = warehouse_env
     server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
-    client = TestClient(TestServer(server._app))
+    client = TestClient(TestServer(server.app))
     await client.start_server()
 
     try:
@@ -1313,7 +1313,7 @@ async def test_nested_tables_have_card_mode_markup(warehouse_env):
     """Слайс #23: історія транзакцій і позиції документа теж стають картками."""
     db, fs, vs = warehouse_env
     server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
-    client = TestClient(TestServer(server._app))
+    client = TestClient(TestServer(server.app))
     await client.start_server()
 
     try:
@@ -1366,7 +1366,7 @@ async def test_api_document_ocr_returns_all_recognition_fields(warehouse_env):
     empty_id = db.add_document(filename="scan.jpg", file_type="photo")
 
     server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
-    client = TestClient(TestServer(server._app))
+    client = TestClient(TestServer(server.app))
     await client.start_server()
 
     fields = ("doc_type", "doc_number", "doc_date", "requested_by", "requested_via")
@@ -1393,7 +1393,7 @@ async def test_document_card_renders_all_recognition_fields(warehouse_env):
     """#27: розгорнута картка будує блок кожного з пʼяти полів — значенням або прочерком."""
     db, fs, vs = warehouse_env
     server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
-    client = TestClient(TestServer(server._app))
+    client = TestClient(TestServer(server.app))
     await client.start_server()
 
     try:
@@ -1503,7 +1503,7 @@ async def _documents_page(warehouse_env):
     """Піднімає сторінку й віддає HTML разом із клієнтом і базою для закриття."""
     db, fs, vs = warehouse_env
     server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
-    client = TestClient(TestServer(server._app))
+    client = TestClient(TestServer(server.app))
     await client.start_server()
     return client, db, await (await client.get("/")).text()
 
@@ -1693,7 +1693,7 @@ async def test_api_documents_keeps_sql_order(warehouse_env):
     second = db.add_document(filename="b.pdf", file_type="pdf")
 
     server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
-    client = TestClient(TestServer(server._app))
+    client = TestClient(TestServer(server.app))
     await client.start_server()
 
     try:
@@ -1742,7 +1742,7 @@ def _doc_with_income(db, **overrides):
 async def _web_client(warehouse_env):
     db, fs, vs = warehouse_env
     server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
-    client = TestClient(TestServer(server._app))
+    client = TestClient(TestServer(server.app))
     await client.start_server()
     return client
 
@@ -2821,7 +2821,7 @@ async def test_document_ocr_endpoint_exposes_the_missing_fields_from_the_shared_
     """#29: картка розгортання отримує перелік із бекенду, а не рахує його сама."""
     db, fs, vs = warehouse_env
     server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
-    client = TestClient(TestServer(server._app))
+    client = TestClient(TestServer(server.app))
     await client.start_server()
     try:
         photo_id = db.add_document(filename="scan.jpg", file_type="photo", doc_type="НАКЛАДНА",

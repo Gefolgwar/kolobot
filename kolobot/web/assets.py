@@ -7,9 +7,12 @@ is the content of the page's single ``<script>``.
 
 from __future__ import annotations
 
+import logging
 from typing import Dict
 
 from kolobot.web.frontend import Frontend
+
+logger = logging.getLogger("kolobot.web_server")
 
 _frontend = Frontend()
 

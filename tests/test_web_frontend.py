@@ -147,7 +147,7 @@ def test_every_asset_reaches_the_page():
 async def test_index_serves_the_page(warehouse_env):
     db, fs, vs = warehouse_env
     server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
-    client = TestClient(TestServer(server._app))
+    client = TestClient(TestServer(server.app))
     await client.start_server()
 
     try:

@@ -72,7 +72,7 @@ async def test_api_retry_document_not_found(warehouse_env):
     """POST /api/warehouse/documents/{id}/retry returns 404 if document does not exist."""
     db, fs, vs = warehouse_env
     server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
-    client = TestClient(TestServer(server._app))
+    client = TestClient(TestServer(server.app))
     await client.start_server()
 
     try:
@@ -109,7 +109,7 @@ async def test_api_retry_document_resets_status_and_clears_error(warehouse_env, 
         owner_user_id=42,
         queue_service=mock_qs,
     )
-    client = TestClient(TestServer(server._app))
+    client = TestClient(TestServer(server.app))
     await client.start_server()
 
     try:
@@ -232,7 +232,7 @@ async def test_web_ui_contains_smart_polling_and_retry_button(warehouse_env):
     """Web HTML contains Smart Polling (3000ms, active status tracking) and Retry button logic."""
     db, fs, vs = warehouse_env
     server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
-    client = TestClient(TestServer(server._app))
+    client = TestClient(TestServer(server.app))
     await client.start_server()
 
     try:
