@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from kolobot.file_store import FileStore
+from kolobot.file_store import FileStore, _ext_from_mime
 from kolobot.vector_store import VectorStore
 
 
@@ -56,11 +56,3 @@ class ListDeleteHandler:
         self._fs.delete_final(doc_id, ext=ext)
 
         return DeleteResult(success=True)
-
-
-def _ext_from_mime(mime: str) -> str:
-    return {
-        "image/jpeg": ".jpg",
-        "image/png": ".png",
-        "image/webp": ".webp",
-    }.get(mime, ".jpg")

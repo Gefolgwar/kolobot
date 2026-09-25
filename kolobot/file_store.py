@@ -8,6 +8,16 @@ import uuid
 from pathlib import Path
 
 
+def _ext_from_mime(mime: str) -> str:
+    """Map a stored MIME type to the extension used for the final file name."""
+    return {
+        "image/jpeg": ".jpg",
+        "image/png": ".png",
+        "image/webp": ".webp",
+        "application/pdf": ".pdf",
+    }.get(mime, ".jpg")
+
+
 class FileStore:
     """
     Deep module: write to downloads/tmp, promote to downloads/{doc_id}{ext},

@@ -67,6 +67,19 @@ async def test_delete_cascade_chroma_and_disk(handler):
 
 
 @pytest.mark.asyncio
+async def test_delete_pdf_removes_file_with_pdf_extension(handler):
+    handler._vs.get.side_effect = None
+    handler._vs.get.return_value = {
+        "id": "p001",
+        "document": "pdf doc",
+        "metadata": {"mime": "application/pdf", "file_name": "scan.pdf"},
+    }
+    result = await handler.delete_doc(doc_id="p001", user_id=42)
+    assert result.success
+    handler._fs.delete_final.assert_called_once_with("p001", ext=".pdf")
+
+
+@pytest.mark.asyncio
 async def test_delete_missing_doc_fails_gracefully(handler):
     handler._vs.get.return_value = None
     result = await handler.delete_doc(doc_id="ghost", user_id=42)

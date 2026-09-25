@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
+from kolobot.file_store import _ext_from_mime
+
 ALLOWED_MIMES = {"image/jpeg", "image/png", "image/webp", "application/pdf"}
 MAX_FILE_SIZE = 20_000_000
 
@@ -68,12 +70,3 @@ class MediaHandler:
     def is_pending(self) -> bool:
         """Compatibility property."""
         return False
-
-
-def _ext_from_mime(mime: str) -> str:
-    return {
-        "image/jpeg": ".jpg",
-        "image/png": ".png",
-        "image/webp": ".webp",
-        "application/pdf": ".pdf",
-    }.get(mime, ".jpg")
