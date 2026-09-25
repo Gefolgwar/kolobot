@@ -10,6 +10,39 @@ from typing import Any, Dict, List, Optional
 
 from kolobot.doc_structurer import extract_requested_by, extract_requested_via
 
+# Обовʼязкові поля бланка: і SQL-умова обліку, і Python-хелпер будуються з цього переліку.
+REQUIRED_DOC_FIELDS = (
+    ("Тип документу", "doc_type"),
+    ("№ документа", "doc_number"),
+    ("Дата документа", "doc_date"),
+    ("Затребував", "requested_by"),
+    ("Через кого", "requested_via"),
+)
+
+# Документи, що не проходили розпізнавання: цих полів бланка в них не існує.
+NON_OCR_FILE_TYPES = ("excel", "manual")
+
+
+def missing_doc_fields(doc: Dict[str, Any]) -> List[str]:
+    """Назви порожніх обовʼязкових полів документа; для не-OCR документів — порожній список."""
+    if (doc.get("file_type") or "") in NON_OCR_FILE_TYPES:
+        return []
+    return [
+        label
+        for label, column in REQUIRED_DOC_FIELDS
+        if not str(doc.get(column) or "").strip()
+    ]
+
+
+def _accounted_sql(alias: str) -> str:
+    """SQL-умова «документ повністю розпізнаний АБО не є OCR-документом»."""
+    filled = " AND ".join(
+        f"TRIM(COALESCE({alias}.{column}, '')) <> ''"
+        for _, column in REQUIRED_DOC_FIELDS
+    )
+    exempt = ", ".join(f"'{file_type}'" for file_type in NON_OCR_FILE_TYPES)
+    return f"({alias}.file_type IN ({exempt}) OR ({filled}))"
+
 
 class WarehouseDB:
 
@@ -48,7 +81,8 @@ class WarehouseDB:
                 chat_id INTEGER NOT NULL DEFAULT 0,
                 user_id INTEGER NOT NULL DEFAULT 0,
                 requested_by TEXT NOT NULL DEFAULT '',
-                requested_via TEXT NOT NULL DEFAULT ''
+                requested_via TEXT NOT NULL DEFAULT '',
+                manual_edited INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS warehouse_items (
@@ -99,6 +133,8 @@ class WarehouseDB:
             self._conn.execute("ALTER TABLE documents ADD COLUMN requested_by TEXT NOT NULL DEFAULT ''")
         if "requested_via" not in doc_cols:
             self._conn.execute("ALTER TABLE documents ADD COLUMN requested_via TEXT NOT NULL DEFAULT ''")
+        if "manual_edited" not in doc_cols:
+            self._conn.execute("ALTER TABLE documents ADD COLUMN manual_edited INTEGER NOT NULL DEFAULT 0")
         if "requested_by" not in doc_cols or "requested_via" not in doc_cols:
             self._backfill_requester_fields()
 
@@ -285,12 +321,13 @@ class WarehouseDB:
         item = self.get_item(item_id)
         if not item:
             return None
-        row = self._conn.execute("""
+        row = self._conn.execute(f"""
             SELECT
-                COALESCE(SUM(CASE WHEN operation_type = 'income' THEN quantity ELSE 0 END), 0) -
-                COALESCE(SUM(CASE WHEN operation_type = 'expense' THEN quantity ELSE 0 END), 0) AS balance
-            FROM warehouse_transactions
-            WHERE item_id = ?
+                COALESCE(SUM(CASE WHEN wt.operation_type = 'income' THEN wt.quantity ELSE 0 END), 0) -
+                COALESCE(SUM(CASE WHEN wt.operation_type = 'expense' THEN wt.quantity ELSE 0 END), 0) AS balance
+            FROM warehouse_transactions wt
+            JOIN documents d ON wt.document_id = d.id
+            WHERE wt.item_id = ? AND {_accounted_sql("d")}
         """, (item_id,)).fetchone()
         return float(row["balance"]) if row else 0.0
 
@@ -391,14 +428,15 @@ class WarehouseDB:
         return cur.lastrowid
 
     def get_items_with_balance(self) -> List[Dict[str, Any]]:
-        rows = self._conn.execute("""
+        accounted = _accounted_sql("d")
+        rows = self._conn.execute(f"""
             SELECT
                 wi.id, wi.sku, wi.name, wi.unit, wi.supplier, wi.notes, wi.min_balance,
-                COALESCE(SUM(CASE WHEN wt.operation_type = 'income' THEN wt.quantity ELSE 0 END), 0) AS total_income,
-                COALESCE(SUM(CASE WHEN wt.operation_type = 'expense' THEN wt.quantity ELSE 0 END), 0) AS total_expense,
-                MAX(wt.doc_date) AS last_doc_date,
-                MAX(wt.doc_number) AS last_doc_number,
-                COUNT(DISTINCT CASE WHEN d.file_type != 'manual' THEN wt.document_id END) AS doc_count
+                COALESCE(SUM(CASE WHEN wt.operation_type = 'income' AND {accounted} THEN wt.quantity ELSE 0 END), 0) AS total_income,
+                COALESCE(SUM(CASE WHEN wt.operation_type = 'expense' AND {accounted} THEN wt.quantity ELSE 0 END), 0) AS total_expense,
+                MAX(CASE WHEN {accounted} THEN wt.doc_date END) AS last_doc_date,
+                MAX(CASE WHEN {accounted} THEN wt.doc_number END) AS last_doc_number,
+                COUNT(DISTINCT CASE WHEN d.file_type != 'manual' AND {accounted} THEN wt.document_id END) AS doc_count
             FROM warehouse_items wi
             LEFT JOIN warehouse_transactions wt ON wi.id = wt.item_id
             LEFT JOIN documents d ON wt.document_id = d.id
@@ -413,12 +451,14 @@ class WarehouseDB:
         return result
 
     def get_item_transactions(self, item_id: int) -> List[Dict[str, Any]]:
-        rows = self._conn.execute("""
+        rows = self._conn.execute(f"""
             SELECT
                 wt.id, wt.operation_type, wt.quantity, wt.doc_number, wt.doc_date, wt.created_at,
                 wt.source_row,
                 d.id AS document_id, d.filename, d.file_type, d.file_path, d.doc_type,
-                d.requested_by, d.requested_via
+                d.requested_by, d.requested_via, d.manual_edited,
+                d.doc_number AS document_number, d.doc_date AS document_date,
+                CASE WHEN {_accounted_sql("d")} THEN 1 ELSE 0 END AS accounted
             FROM warehouse_transactions wt
             JOIN documents d ON wt.document_id = d.id
             WHERE wt.item_id = ?
@@ -428,10 +468,22 @@ class WarehouseDB:
         running_balance = 0.0
         for r in rows:
             d = dict(r)
-            if d["operation_type"] == "income":
-                running_balance += d["quantity"]
-            else:
-                running_balance -= d["quantity"]
+            d["accounted"] = bool(d["accounted"])
+            d["manual_edited"] = bool(d["manual_edited"])
+            d["missing_fields"] = missing_doc_fields({
+                "file_type": d["file_type"],
+                "doc_type": d["doc_type"],
+                "doc_number": d["document_number"],
+                "doc_date": d["document_date"],
+                "requested_by": d["requested_by"],
+                "requested_via": d["requested_via"],
+            })
+            # Накопичувальний залишок рахує лише враховані рядки, щоб збігатися із залишком позиції.
+            if d["accounted"]:
+                if d["operation_type"] == "income":
+                    running_balance += d["quantity"]
+                else:
+                    running_balance -= d["quantity"]
             d["running_balance"] = running_balance
             result.append(d)
         return result
@@ -441,14 +493,20 @@ class WarehouseDB:
             SELECT
                 d.id, d.filename, d.file_type, d.file_path, d.uploaded_at,
                 d.doc_number, d.doc_date, d.doc_type, d.raw_text,
-                d.status, d.error_message, d.requested_by, d.requested_via,
+                d.status, d.error_message, d.requested_by, d.requested_via, d.manual_edited,
                 COUNT(wt.id) AS transaction_count
             FROM documents d
             LEFT JOIN warehouse_transactions wt ON d.id = wt.document_id
             GROUP BY d.id
             ORDER BY d.uploaded_at DESC
         """).fetchall()
-        return [dict(r) for r in rows]
+        result = []
+        for r in rows:
+            d = dict(r)
+            d["manual_edited"] = bool(d["manual_edited"])
+            d["missing_fields"] = missing_doc_fields(d)
+            result.append(d)
+        return result
 
     def get_document(self, doc_id: int) -> Optional[Dict[str, Any]]:
         row = self._conn.execute(
@@ -469,6 +527,7 @@ class WarehouseDB:
             "filename", "file_type", "file_path", "doc_number",
             "doc_date", "raw_text", "doc_type", "status", "error_message",
             "file_id", "chat_id", "user_id", "requested_by", "requested_via",
+            "manual_edited",
         }
         updates = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
         row = self._conn.execute(

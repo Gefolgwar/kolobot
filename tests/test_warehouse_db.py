@@ -7,7 +7,7 @@ import sqlite3
 
 import pytest
 
-from kolobot.warehouse_db import WarehouseDB
+from kolobot.warehouse_db import REQUIRED_DOC_FIELDS, WarehouseDB, missing_doc_fields
 
 
 @pytest.fixture
@@ -19,6 +19,26 @@ def warehouse_db(tmp_path):
         yield db
     finally:
         db.close()
+
+
+def _add_complete_photo_doc(db, **overrides):
+    """OCR-документ, у якого розпізнано всі пʼять обовʼязкових полів бланка."""
+    fields = {
+        "filename": "nakladna_101.jpg",
+        "file_type": "photo",
+        "doc_type": "НАКЛАДНА",
+        "doc_number": "101",
+        "doc_date": "01.08.2026",
+        "requested_by": "начальник служби (ПІБ)",
+        "requested_via": "7939 - (ПІБ)",
+    }
+    fields.update(overrides)
+    return db.add_document(**fields)
+
+
+def _add_incomplete_photo_doc(db, **overrides):
+    """OCR-документ, у якому не розпізнано «Затребував»."""
+    return _add_complete_photo_doc(db, filename="vymoha_incomplete.jpg", requested_by="", **overrides)
 
 
 def test_adjust_item_field_name_creates_audit_transaction(warehouse_db):
@@ -600,6 +620,330 @@ def test_migration_handles_db_that_already_has_requested_by(tmp_path):
         doc = db.get_documents()[0]
         assert doc["requested_by"] == "начальник служби (ПІБ)"
         assert doc["requested_via"] == "7939 - (ПІБ)"
+    finally:
+        db.close()
+
+
+# =========================================================================
+# Неповне розпізнавання: «не в обліку» (Issue #28)
+# =========================================================================
+
+
+def test_missing_doc_fields_lists_empty_required_fields(warehouse_db):
+    """Хелпер віддає назви саме порожніх обовʼязкових полів бланка."""
+    complete_id = _add_complete_photo_doc(warehouse_db)
+    partial_id = _add_complete_photo_doc(
+        warehouse_db, filename="partial.jpg", doc_number="", requested_via="   "
+    )
+
+    docs = {d["id"]: d for d in warehouse_db.get_documents()}
+    assert docs[complete_id]["missing_fields"] == []
+    assert docs[partial_id]["missing_fields"] == ["№ документа", "Через кого"]
+
+
+def test_missing_doc_fields_is_empty_for_excel_and_manual_documents(warehouse_db):
+    """Excel-імпорт і системний документ ручних коригувань під правило не підпадають."""
+    excel_doc = {"file_type": "excel", "doc_type": "", "doc_number": "", "doc_date": "",
+                 "requested_by": "", "requested_via": ""}
+    manual_doc = {"file_type": "manual", "doc_type": "РУЧНЕ_КОРИГУВАННЯ", "doc_number": "",
+                  "doc_date": "", "requested_by": "", "requested_via": ""}
+    photo_doc = {"file_type": "photo", "doc_type": "", "doc_number": "1", "doc_date": "",
+                 "requested_by": "", "requested_via": ""}
+
+    assert missing_doc_fields(excel_doc) == []
+    assert missing_doc_fields(manual_doc) == []
+    assert missing_doc_fields(photo_doc) == ["Тип документу", "Дата документа", "Затребував", "Через кого"]
+
+
+def test_missing_doc_fields_reports_every_required_field_name(warehouse_db):
+    """Усі пʼять обовʼязкових полів походять з єдиного переліку."""
+    empty_doc = {"file_type": "photo"}
+    assert missing_doc_fields(empty_doc) == [label for label, _ in REQUIRED_DOC_FIELDS]
+
+    excel_id = warehouse_db.add_document(filename="import.xlsx", file_type="excel")
+    manual_id = warehouse_db.get_or_create_manual_document()
+    docs = {d["id"]: d for d in warehouse_db.get_documents()}
+    assert docs[excel_id]["missing_fields"] == []
+    assert docs[manual_id]["missing_fields"] == []
+
+
+@pytest.mark.parametrize("column", [column for _, column in REQUIRED_DOC_FIELDS])
+def test_every_required_field_gates_accounting(warehouse_db, column):
+    """Порожнє будь-яке з пʼяти полів виводить документ з обліку, заповнене — повертає."""
+    filled = "01.08.2026" if column == "doc_date" else "НАКЛАДНА"
+    doc_id = _add_complete_photo_doc(warehouse_db, **{column: ""})
+    item_id = warehouse_db.add_item(name="Болт М8", sku="SKU-001", unit="шт")
+    warehouse_db.add_transaction(
+        item_id=item_id, document_id=doc_id, operation_type="income", quantity=10.0
+    )
+
+    assert warehouse_db.get_item_balance(item_id) == 0.0
+    assert warehouse_db.get_item_transactions(item_id)[0]["accounted"] is False
+
+    warehouse_db.update_document(doc_id, **{column: filled})
+
+    assert warehouse_db.get_item_balance(item_id) == 10.0
+    assert warehouse_db.get_item_transactions(item_id)[0]["accounted"] is True
+
+
+def test_incomplete_document_does_not_affect_income_expense_and_balance(warehouse_db):
+    """Прихід, розхід і залишок позиції рахують лише повністю розпізнані документи."""
+    item_id = warehouse_db.add_item(name="Кабель ВВГ", sku="CAB-01", unit="м")
+    complete_doc = _add_complete_photo_doc(warehouse_db)
+    incomplete_doc = _add_incomplete_photo_doc(warehouse_db)
+
+    warehouse_db.add_transaction(
+        item_id=item_id, document_id=complete_doc, operation_type="income", quantity=50.0
+    )
+    warehouse_db.add_transaction(
+        item_id=item_id, document_id=incomplete_doc, operation_type="income", quantity=105.0
+    )
+    warehouse_db.add_transaction(
+        item_id=item_id, document_id=incomplete_doc, operation_type="expense", quantity=7.0
+    )
+
+    item = next(i for i in warehouse_db.get_items_with_balance() if i["id"] == item_id)
+    assert item["total_income"] == 50.0
+    assert item["total_expense"] == 0.0
+    assert item["balance"] == 50.0
+
+
+def test_incomplete_document_is_not_counted_and_item_falls_out_of_doc_count(warehouse_db):
+    """Позиція з єдиним необлікованим документом показує 0 документів."""
+    item_id = warehouse_db.add_item(name="Труба ПВХ", sku="TR-01", unit="м")
+    incomplete_doc = _add_incomplete_photo_doc(warehouse_db)
+    warehouse_db.add_transaction(
+        item_id=item_id, document_id=incomplete_doc, operation_type="income", quantity=30.0
+    )
+
+    item = next(i for i in warehouse_db.get_items_with_balance() if i["id"] == item_id)
+    assert item["doc_count"] == 0
+    assert item["balance"] == 0.0
+
+    warehouse_db.update_document(incomplete_doc, requested_by="комірник (ПІБ)")
+
+    item = next(i for i in warehouse_db.get_items_with_balance() if i["id"] == item_id)
+    assert item["doc_count"] == 1
+    assert item["balance"] == 30.0
+
+
+def test_last_doc_date_and_number_skip_unaccounted_transactions(warehouse_db):
+    """Остання дата й номер позиції беруться лише з урахованих транзакцій."""
+    item_id = warehouse_db.add_item(name="Лампа LED", sku="LED-01", unit="шт")
+    complete_doc = _add_complete_photo_doc(warehouse_db, doc_number="101", doc_date="01.08.2026")
+    incomplete_doc = _add_incomplete_photo_doc(warehouse_db, doc_number="999", doc_date="31.12.2026")
+
+    warehouse_db.add_transaction(
+        item_id=item_id, document_id=complete_doc, operation_type="income",
+        quantity=10.0, doc_number="101", doc_date="01.08.2026",
+    )
+    warehouse_db.add_transaction(
+        item_id=item_id, document_id=incomplete_doc, operation_type="income",
+        quantity=99.0, doc_number="999", doc_date="31.12.2026",
+    )
+
+    item = next(i for i in warehouse_db.get_items_with_balance() if i["id"] == item_id)
+    assert item["last_doc_number"] == "101"
+    assert item["last_doc_date"] == "01.08.2026"
+
+
+def test_manual_quantity_adjustment_ignores_unaccounted_transactions(warehouse_db):
+    """База для ручного коригування залишку не враховує необліковані транзакції."""
+    item_id = warehouse_db.add_item(name="Шайба М10", sku="WASH-10", unit="шт")
+    incomplete_doc = _add_incomplete_photo_doc(warehouse_db)
+    warehouse_db.add_transaction(
+        item_id=item_id, document_id=incomplete_doc, operation_type="income", quantity=105.0
+    )
+
+    result = warehouse_db.adjust_item_quantity(item_id=item_id, target_quantity=20.0)
+
+    assert result["old_balance"] == 0.0
+    assert result["delta"] == 20.0
+    assert result["operation_type"] == "income"
+    assert warehouse_db.get_item_balance(item_id) == 20.0
+
+
+def test_running_balance_skips_unaccounted_rows_and_matches_item_balance(warehouse_db):
+    """Накопичувальний залишок в історії пропускає невраховані рядки й збігається із залишком позиції."""
+    item_id = warehouse_db.add_item(name="Гайка М6", sku="NUT-M6", unit="шт")
+    complete_doc = _add_complete_photo_doc(warehouse_db)
+    incomplete_doc = _add_incomplete_photo_doc(warehouse_db)
+
+    warehouse_db.add_transaction(
+        item_id=item_id, document_id=complete_doc, operation_type="income", quantity=10.0
+    )
+    warehouse_db.add_transaction(
+        item_id=item_id, document_id=incomplete_doc, operation_type="income", quantity=100.0
+    )
+    warehouse_db.add_transaction(
+        item_id=item_id, document_id=complete_doc, operation_type="expense", quantity=4.0
+    )
+
+    txs = warehouse_db.get_item_transactions(item_id)
+    assert len(txs) == 3
+    assert [tx["accounted"] for tx in txs] == [True, False, True]
+    assert [tx["running_balance"] for tx in txs] == [10.0, 10.0, 6.0]
+
+    item = next(i for i in warehouse_db.get_items_with_balance() if i["id"] == item_id)
+    assert txs[-1]["running_balance"] == item["balance"] == 6.0
+
+
+def test_filling_a_field_returns_document_to_accounting_without_extra_actions(warehouse_db):
+    """Дозаповнення поля прямо в базі повертає документ в облік; стирання — виводить."""
+    item_id = warehouse_db.add_item(name="Болт М8", sku="SKU-001", unit="шт")
+    doc_id = _add_incomplete_photo_doc(warehouse_db)
+    warehouse_db.add_transaction(
+        item_id=item_id, document_id=doc_id, operation_type="income", quantity=105.0
+    )
+
+    assert warehouse_db.get_item_balance(item_id) == 0.0
+
+    warehouse_db.update_document(doc_id, requested_by="начальник служби (ПІБ)")
+
+    assert warehouse_db.get_item_balance(item_id) == 105.0
+    assert warehouse_db.get_document(doc_id)["requested_by"] == "начальник служби (ПІБ)"
+
+    warehouse_db.update_document(doc_id, requested_by="")
+
+    assert warehouse_db.get_item_balance(item_id) == 0.0
+    item = next(i for i in warehouse_db.get_items_with_balance() if i["id"] == item_id)
+    assert item["doc_count"] == 0
+
+
+def test_documents_selection_reports_missing_fields_and_manual_edit_mark(warehouse_db):
+    """Вибірка документів віддає перелік відсутніх полів і позначку ручного редагування."""
+    complete_doc = _add_complete_photo_doc(warehouse_db)
+    incomplete_doc = _add_incomplete_photo_doc(warehouse_db)
+    excel_doc = warehouse_db.add_document(filename="import.xlsx", file_type="excel")
+
+    docs = {d["id"]: d for d in warehouse_db.get_documents()}
+    assert docs[complete_doc]["missing_fields"] == []
+    assert docs[complete_doc]["manual_edited"] is False
+    assert docs[incomplete_doc]["missing_fields"] == ["Затребував"]
+    assert docs[excel_doc]["missing_fields"] == []
+
+    warehouse_db.update_document(incomplete_doc, manual_edited=1)
+
+    docs = {d["id"]: d for d in warehouse_db.get_documents()}
+    assert docs[incomplete_doc]["manual_edited"] is True
+    assert docs[incomplete_doc]["missing_fields"] == ["Затребував"]
+
+
+def test_documents_position_count_is_not_filtered_by_accounting(warehouse_db):
+    """Колонка «Позицій» показує справжню кількість позицій документа, а не облікову."""
+    doc_id = _add_incomplete_photo_doc(warehouse_db)
+    for sku in ("SKU-1", "SKU-2", "SKU-3"):
+        item_id = warehouse_db.add_item(name=f"Позиція {sku}", sku=sku)
+        warehouse_db.add_transaction(
+            item_id=item_id, document_id=doc_id, operation_type="income", quantity=5.0
+        )
+
+    doc = next(d for d in warehouse_db.get_documents() if d["id"] == doc_id)
+    assert doc["transaction_count"] == 3
+    assert doc["missing_fields"] == ["Затребував"]
+
+
+def test_item_transactions_expose_accounting_flag_and_document_data(warehouse_db):
+    """Вибірка транзакцій позиції віддає ознаку «враховано» і дані документа для позначок."""
+    item_id = warehouse_db.add_item(name="Болт М8", sku="SKU-001", unit="шт")
+    complete_doc = _add_complete_photo_doc(warehouse_db)
+    incomplete_doc = _add_incomplete_photo_doc(warehouse_db)
+    warehouse_db.update_document(complete_doc, manual_edited=1)
+    warehouse_db.update_document(incomplete_doc, manual_edited=1)
+
+    warehouse_db.add_transaction(
+        item_id=item_id, document_id=complete_doc, operation_type="income", quantity=1.0
+    )
+    warehouse_db.add_transaction(
+        item_id=item_id, document_id=incomplete_doc, operation_type="income", quantity=2.0
+    )
+
+    accounted_tx, unaccounted_tx = warehouse_db.get_item_transactions(item_id)
+    assert accounted_tx["accounted"] is True
+    assert accounted_tx["missing_fields"] == []
+    assert accounted_tx["manual_edited"] is True
+    assert accounted_tx["document_date"] == "01.08.2026"
+
+    assert unaccounted_tx["accounted"] is False
+    assert unaccounted_tx["missing_fields"] == ["Затребував"]
+    assert unaccounted_tx["manual_edited"] is True
+
+
+def test_excel_and_manual_documents_are_always_accounted(warehouse_db):
+    """Excel-документ і системний документ ручних коригувань враховуються завжди."""
+    item_id = warehouse_db.add_item(name="Світильник 36W", sku="LIGHT-36", unit="шт")
+    excel_doc = warehouse_db.add_document(filename="import.xlsx", file_type="excel")
+    warehouse_db.add_transaction(
+        item_id=item_id, document_id=excel_doc, operation_type="income", quantity=20.0
+    )
+
+    warehouse_db.adjust_item_quantity(item_id=item_id, target_quantity=32.0)
+
+    item = next(i for i in warehouse_db.get_items_with_balance() if i["id"] == item_id)
+    assert item["total_income"] == 32.0
+    assert item["balance"] == 32.0
+    assert all(tx["accounted"] for tx in warehouse_db.get_item_transactions(item_id))
+
+
+def test_migration_adds_manual_edited_to_legacy_db(tmp_path):
+    """Міграція додає колонку позначки ручного редагування й не ламає наявні дані."""
+    db_path = str(tmp_path / "legacy_flag.db")
+    conn = sqlite3.connect(db_path)
+    conn.executescript("""
+        CREATE TABLE documents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            filename TEXT NOT NULL,
+            file_type TEXT NOT NULL,
+            file_path TEXT NOT NULL DEFAULT '',
+            uploaded_at REAL NOT NULL,
+            doc_number TEXT NOT NULL DEFAULT '',
+            doc_date TEXT NOT NULL DEFAULT '',
+            raw_text TEXT NOT NULL DEFAULT '',
+            doc_type TEXT NOT NULL DEFAULT '',
+            requested_by TEXT NOT NULL DEFAULT '',
+            requested_via TEXT NOT NULL DEFAULT ''
+        );
+        CREATE TABLE warehouse_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sku TEXT NOT NULL DEFAULT '',
+            name TEXT NOT NULL,
+            unit TEXT NOT NULL DEFAULT '',
+            supplier TEXT NOT NULL DEFAULT '',
+            notes TEXT NOT NULL DEFAULT ''
+        );
+        CREATE TABLE warehouse_transactions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            item_id INTEGER NOT NULL REFERENCES warehouse_items(id),
+            document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+            operation_type TEXT NOT NULL CHECK(operation_type IN ('income', 'expense')),
+            quantity REAL NOT NULL DEFAULT 0,
+            doc_number TEXT NOT NULL DEFAULT '',
+            doc_date TEXT NOT NULL DEFAULT '',
+            created_at REAL NOT NULL
+        );
+    """)
+    conn.execute(
+        "INSERT INTO documents (filename, file_type, uploaded_at, doc_number, doc_date, doc_type, requested_by, requested_via) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("legacy.jpg", "photo", 1.0, "101", "01.08.2026", "НАКЛАДНА", "комірник", "7939"),
+    )
+    conn.execute("INSERT INTO warehouse_items (name) VALUES ('Болт М8')")
+    conn.execute(
+        "INSERT INTO warehouse_transactions (item_id, document_id, operation_type, quantity, created_at) "
+        "VALUES (1, 1, 'income', 15.0, 1.0)"
+    )
+    conn.commit()
+    conn.close()
+
+    db = WarehouseDB(db_path=db_path)
+    db.init_db()
+    try:
+        doc = db.get_documents()[0]
+        assert doc["manual_edited"] is False
+        assert doc["missing_fields"] == []
+        item = db.get_items_with_balance()[0]
+        assert item["balance"] == 15.0
+        assert item["doc_count"] == 1
     finally:
         db.close()
 
