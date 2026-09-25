@@ -287,6 +287,9 @@ def _save_to_warehouse(
     file_type = "photo" if mime.startswith("image") else "pdf"
 
     if existing_doc_id is not None:
+        # Повторна обробка: транзакції попереднього проходу прибираємо ДО запису нових,
+        # щоб прихід не подвоївся. Обидва записи йдуть однією транзакцією БД.
+        wdb.clear_document_transactions(existing_doc_id)
         wdb.update_document(
             existing_doc_id,
             filename=file_name,

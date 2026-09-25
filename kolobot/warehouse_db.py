@@ -557,15 +557,24 @@ class WarehouseDB:
         """, (doc_id,)).fetchall()
         return [dict(r) for r in rows]
 
+    def clear_document_transactions(self, doc_id: int) -> int:
+        """Прибирає всі транзакції документа, не чіпаючи позиції складу та їхні ручні поля.
+
+        Повертає кількість видалених рядків. Запис не комітиться — його завершує
+        викликач, щоб очищення й оновлення полів документа лягли в одну операцію запису.
+        """
+        cur = self._conn.execute(
+            "DELETE FROM warehouse_transactions WHERE document_id = ?", (doc_id,)
+        )
+        return cur.rowcount
+
     def delete_document(self, doc_id: int) -> bool:
         row = self._conn.execute(
             "SELECT id FROM documents WHERE id = ?", (doc_id,)
         ).fetchone()
         if not row:
             return False
-        self._conn.execute(
-            "DELETE FROM warehouse_transactions WHERE document_id = ?", (doc_id,)
-        )
+        self.clear_document_transactions(doc_id)
         self._conn.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
         self._cleanup_orphan_items()
         self._conn.commit()

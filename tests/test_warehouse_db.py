@@ -948,4 +948,42 @@ def test_migration_adds_manual_edited_to_legacy_db(tmp_path):
         db.close()
 
 
+def test_clear_document_transactions_removes_only_that_documents_transactions(warehouse_db):
+    """Очищення прибирає транзакції одного документа, не чіпаючи ні інші документи, ні позиції."""
+    item_id = warehouse_db.add_item(name="Болт М8", sku="SKU-001", supplier="ТОВ Постач")
+    target_doc = _add_complete_photo_doc(warehouse_db)
+    other_doc = _add_complete_photo_doc(warehouse_db, filename="nakladna_102.jpg", doc_number="102")
+    warehouse_db.add_transaction(
+        item_id=item_id, document_id=target_doc, operation_type="income", quantity=5.0
+    )
+    warehouse_db.add_transaction(
+        item_id=item_id, document_id=other_doc, operation_type="income", quantity=3.0
+    )
+
+    assert warehouse_db.clear_document_transactions(target_doc) == 1
+
+    assert warehouse_db.get_document_impact(target_doc) == []
+    assert len(warehouse_db.get_document_impact(other_doc)) == 1
+    assert warehouse_db.get_document(target_doc) is not None
+    assert warehouse_db.get_item(item_id)["supplier"] == "ТОВ Постач"
+
+
+def test_delete_document_still_removes_its_transactions(warehouse_db):
+    """Видалення документа й далі прибирає всі його транзакції та сам документ."""
+    item_id = warehouse_db.add_item(name="Болт М8", sku="SKU-001")
+    doc_id = _add_complete_photo_doc(warehouse_db)
+    warehouse_db.add_transaction(
+        item_id=item_id, document_id=doc_id, operation_type="income", quantity=5.0
+    )
+
+    assert warehouse_db.delete_document(doc_id) is True
+
+    assert warehouse_db.get_document(doc_id) is None
+    assert warehouse_db.get_document_impact(doc_id) == []
+    remaining = warehouse_db._conn.execute(
+        "SELECT COUNT(*) FROM warehouse_transactions WHERE document_id = ?", (doc_id,)
+    ).fetchone()[0]
+    assert remaining == 0
+
+
 
