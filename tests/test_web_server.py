@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -2798,6 +2799,285 @@ async def test_document_ocr_endpoint_exposes_the_missing_fields_from_the_shared_
         # той самий перелік, що й у таблиці документів
         docs = {d["id"]: d for d in db.get_documents()}
         assert docs[photo_id]["missing_fields"] == photo["missing_fields"]
+    finally:
+        await client.close()
+        db.close()
+
+
+# =========================================================================
+# Слайс #30: невраховані документи в розгорнутій історії транзакцій позиції
+# =========================================================================
+
+# Історію малює єдина функція — поза нею неврахованих міток бути не має.
+TX_HISTORY_BLOCK_START = "async function reloadTransactions(itemId)"
+TX_HISTORY_BLOCK_END = "function toggleTransactions"
+
+# Приглушення рядка і прочерк замість числа, якого немає в залишку позиції.
+TX_ROW_DIM = "opacity-60"
+TX_DASH_TITLE = "Документ не в обліку — кількість не входить у залишок"
+
+# Оточення браузера для всієї сторінки: /transactions віддає історію, /items — позицію.
+_TX_HISTORY_STUBS = """
+const fs = require('fs');
+const payload = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+
+const els = {};
+function el(id) {
+    if (!els[id]) {
+        els[id] = {
+            id: id, innerHTML: '', textContent: '', innerText: '', value: '', type: '', style: {},
+            classList: { add() {}, remove() {}, contains: () => false },
+            addEventListener() {}
+        };
+    }
+    return els[id];
+}
+globalThis.document = { getElementById: el, querySelectorAll: () => [], addEventListener() {} };
+globalThis.window = { addEventListener() {} };
+globalThis.setTimeout = () => 0;
+globalThis.clearTimeout = () => {};
+globalThis.alert = () => {};
+
+globalThis.fetch = async url => {
+    const body = String(url).indexOf('/transactions') !== -1 ? payload.txs : payload.items;
+    return { ok: true, status: 200, json: async () => body };
+};
+"""
+
+_TX_HISTORY_DRIVER = """
+(async () => {
+    allItems = payload.items;
+    await reloadTransactions(payload.itemId);
+    console.log(JSON.stringify({ html: els['tx-content-' + payload.itemId].innerHTML }));
+})();
+"""
+
+
+def _run_tx_history(html, payload):
+    """Проганяє сторінку в node: історію транзакцій малює справжній JS сторінки."""
+    page = html.split("<script>", 1)[1].split("</script>", 1)[0]
+    with tempfile.TemporaryDirectory() as tmp:
+        script = os.path.join(tmp, "tx_history.js")
+        payload_path = os.path.join(tmp, "payload.json")
+        with open(script, "w", encoding="utf-8") as fh:
+            fh.write(_TX_HISTORY_STUBS + page + _TX_HISTORY_DRIVER)
+        with open(payload_path, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh)
+        proc = subprocess.run([NODE, script, payload_path],
+                              capture_output=True, text=True, encoding="utf-8")
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout)["html"]
+
+
+def _history_rows(markup):
+    """Рядки історії транзакцій у порядку показу — без рядка заголовків."""
+    return [chunk for chunk in markup.split("<tr ")[1:] if "<td " in chunk]
+
+
+def _history_row_of(markup, filename):
+    """Рядок історії, у якому згадано цей файл документа."""
+    for row in _history_rows(markup):
+        if filename in row:
+            return row
+    raise AssertionError(f"рядка з файлом {filename} в історії немає")
+
+
+def _history_row_class(row):
+    """Класи рядка історії — саме тут видно приглушення."""
+    return row.split('class="', 1)[1].split('"', 1)[0]
+
+
+def _history_cell(row, label):
+    """Вміст клітинки рядка історії за підписом колонки."""
+    for cell in row.split("<td ")[1:]:
+        if f'data-label="{label}"' in cell:
+            return cell.split(">", 1)[1].split("</td>", 1)[0]
+    raise AssertionError(f"клітинки «{label}» у рядку немає")
+
+
+def _history_cell_tooltip(row, label):
+    """Текст підказки в клітинці рядка історії — те, що побачить користувач при наведенні."""
+    return _history_cell(row, label).split('title="', 1)[1].split('"', 1)[0]
+
+
+def _history_cell_text(row, label):
+    """Видимий текст клітинки: розмітка не має вдавати число або прочерк."""
+    return re.sub(r"<[^>]+>", "", _history_cell(row, label)).strip()
+
+
+def _item_with_an_unaccounted_document(db):
+    """Позиція з трьома транзакціями: два враховані документи і один неврахований.
+
+    Неврахований приносить +50 і в залишок не входить, тож залишок позиції — 70.
+    Повертає id позиції та id неврахованого документа.
+    """
+    item_id = db.add_item(name="Гайка М6", sku="NUT-M6", unit="шт")
+    accounted_income = _partial_photo_doc(db, filename="nakladna_101.jpg", doc_number="101",
+                                         requested_by="комірник (ПІБ)")
+    unaccounted = _partial_photo_doc(db, filename="vymoha_215.jpg", doc_number="215")
+    accounted_expense = _partial_photo_doc(db, filename="vymoha_216.jpg", doc_number="216",
+                                           requested_by="комірник (ПІБ)", doc_type="ВИМОГА")
+    db.add_transaction(item_id=item_id, document_id=accounted_income,
+                       operation_type="income", quantity=100.0)
+    db.add_transaction(item_id=item_id, document_id=unaccounted,
+                       operation_type="income", quantity=50.0)
+    db.add_transaction(item_id=item_id, document_id=accounted_expense,
+                       operation_type="expense", quantity=30.0)
+    return item_id, unaccounted
+
+
+async def _history_payload(client, item_id):
+    """Свіжі відповіді API: позиція зі своїм залишком і її історія транзакцій."""
+    items = await (await client.get("/api/warehouse/items")).json()
+    txs = await (await client.get(f"/api/warehouse/items/{item_id}/transactions")).json()
+    item = next(i for i in items if i["id"] == item_id)
+    return {"itemId": item_id, "items": [item], "txs": txs}
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(NODE is None, reason="node недоступний — JS сторінки не виконати")
+async def test_unaccounted_row_in_the_history_is_dimmed_with_a_triangle_and_a_dash(warehouse_env):
+    """#30: неврахований рядок приглушено; у «Документі» — жовтий трикутник, у «Залишку» — прочерк."""
+    client, db, html = await _documents_page(warehouse_env)
+    try:
+        item_id, _ = _item_with_an_unaccounted_document(db)
+        payload = await _history_payload(client, item_id)
+        assert [tx["accounted"] for tx in payload["txs"]] == [True, False, True]
+        markup = _run_tx_history(html, payload)
+
+        unaccounted = _history_row_of(markup, "vymoha_215.jpg")
+        accounted = _history_row_of(markup, "nakladna_101.jpg")
+
+        # рядок видно приглушеним — а сусідній врахований ні
+        assert TX_ROW_DIM in _history_row_class(unaccounted)
+        assert TX_ROW_DIM not in _history_row_class(accounted)
+
+        # трикутник стоїть у колонці «Документ» і перелічує причину тими самими словами, що й #29
+        doc_cell = _history_cell(unaccounted, "Документ")
+        assert "fa-triangle-exclamation" in doc_cell
+        assert "text-amber-400" in doc_cell
+        assert _history_cell_tooltip(unaccounted, "Документ") == DOC_UNACCOUNTED_WARNING + "Затребував"
+
+        # у «Залишку» — прочерк, а не число, якого немає в залишку позиції
+        dash = _history_cell_text(unaccounted, "Залишок")
+        assert dash == "—"
+        assert TX_DASH_TITLE in _history_cell(unaccounted, "Залишок")
+
+        # у врахованого рядка число лишається на місці
+        assert _history_cell_text(accounted, "Залишок") == "100"
+    finally:
+        await client.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(NODE is None, reason="node недоступний — JS сторінки не виконати")
+async def test_unaccounted_row_stays_in_the_history(warehouse_env):
+    """#30: неврахований рядок не ховається — інакше незрозуміло, куди поділася кількість."""
+    client, db, html = await _documents_page(warehouse_env)
+    try:
+        item_id, _ = _item_with_an_unaccounted_document(db)
+        payload = await _history_payload(client, item_id)
+        markup = _run_tx_history(html, payload)
+
+        # усі три рядки на місці, у порядку створення транзакцій
+        rows = _history_rows(markup)
+        assert len(rows) == len(payload["txs"]) == 3
+        assert [tx["filename"] for tx in payload["txs"]] == [
+            "nakladna_101.jpg", "vymoha_215.jpg", "vymoha_216.jpg"
+        ]
+        for tx in payload["txs"]:
+            assert _history_row_of(markup, tx["filename"])
+
+        # кількість неврахованого документа показана — видно, куди поділася кількість
+        qty = _history_cell_text(_history_row_of(markup, "vymoha_215.jpg"), "Кількість")
+        assert qty == "+50"
+    finally:
+        await client.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(NODE is None, reason="node недоступний — JS сторінки не виконати")
+async def test_history_balance_matches_the_item_header(warehouse_env):
+    """#30: накопичувальний залишок історії збігається із залишком у шапці — двох залишків на екрані немає."""
+    client, db, html = await _documents_page(warehouse_env)
+    try:
+        item_id, _ = _item_with_an_unaccounted_document(db)
+        payload = await _history_payload(client, item_id)
+        balance = payload["items"][0]["balance"]
+        assert balance == 70.0                       # невраховані 50 у залишок не входять
+        assert payload["txs"][-1]["running_balance"] == balance
+
+        markup = _run_tx_history(html, payload)
+
+        # шапка розгорнутої історії показує рівно залишок позиції
+        header = markup.split("Поточний залишок:")[1].split("</div>")[0]
+        assert f"{balance:g} шт" in header
+
+        # останній рядок історії дає той самий залишок; неврахований рядок числа не додає
+        shown = [_history_cell_text(row, "Залишок") for row in _history_rows(markup)]
+        assert shown == ["100", "—", f"{balance:g}"]
+    finally:
+        await client.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_the_unaccounted_mark_in_the_history_comes_from_the_backend(warehouse_env):
+    """#30: приглушення й трикутник спираються на готові accounted і missing_fields."""
+    client, db, html = await _documents_page(warehouse_env)
+    try:
+        block = html.split(TX_HISTORY_BLOCK_START, 1)[1].split(TX_HISTORY_BLOCK_END, 1)[0]
+        assert "tx.accounted === false" in block
+        assert "tx.missing_fields" in block
+        # підказка сформульована тими самими словами, що й у вкладці «Документи»
+        assert DOC_UNACCOUNTED_WARNING in block
+
+        # перелік полів не переказано у фронтенді: причину показує готовий missing_fields
+        assert "missingFields.join(', ')" in block
+        for label in DOC_REQUIRED_LABELS:
+            assert f"'{label}'" not in block, label
+        assert "file_type IN" not in block
+    finally:
+        await client.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(NODE is None, reason="node недоступний — JS сторінки не виконати")
+async def test_item_row_and_manual_correction_row_get_no_unaccounted_marks(warehouse_env):
+    """#30: приглушення й трикутник — лише в історії; рядок позиції та системний документ їх не мають."""
+    client, db, html = await _documents_page(warehouse_env)
+    try:
+        # рядок позиції складу не отримує нічого нового: його єдиний трикутник — «нижче мінімуму»
+        render_items = html.split("function renderItems(items)")[1].split("tbody.innerHTML = html;")[0]
+        assert "не в обліку" not in render_items
+        assert TX_ROW_DIM not in render_items
+        assert "Залишок менше мінімального!" in render_items
+
+        item_id, unaccounted_doc = _item_with_an_unaccounted_document(db)
+        # правка поля робить неврахований документ ручним, не повертаючи його в облік
+        db.edit_document_field(unaccounted_doc, "requested_via", "7939 - (ПІБ)")
+        manual_doc = db.get_or_create_manual_document()
+        db.add_transaction(item_id=item_id, document_id=manual_doc,
+                           operation_type="income", quantity=5.0)
+
+        payload = await _history_payload(client, item_id)
+        markup = _run_tx_history(html, payload)
+
+        # системний документ ручних коригувань під правило обліку не підпадає
+        manual_row = _history_row_of(markup, "Ручне редагування (Користувач)")
+        assert "fa-user-pen" in _history_cell(manual_row, "Документ")
+        assert "fa-triangle-exclamation" not in manual_row
+        assert TX_ROW_DIM not in _history_row_class(manual_row)
+        assert "—" not in _history_cell(manual_row, "Залишок")
+
+        # а на неврахованому рядку поруч стоять два різні значки: трикутник і олівець правки
+        row = _history_row_of(markup, "vymoha_215.jpg")
+        assert "fa-triangle-exclamation" in row
+        assert "fa-pen" in _history_cell(row, "Документ")
+        assert 'title="Правка вручну"' in _history_cell(row, "Документ")
     finally:
         await client.close()
         db.close()

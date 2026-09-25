@@ -987,6 +987,15 @@ async function reloadTransactions(itemId) {
             '</tr></thead><tbody>';
         txs.forEach(tx => {
             const isManual = tx.file_type === 'manual' || tx.doc_type === 'РУЧНЕ_КОРИГУВАННЯ';
+            // Неврахований рядок (#30): прапорець рахує бекенд тим самим правилом обліку,
+            // що й вкладка «Документи» (#29), — фронтенд його не повторює. Такий рядок
+            // лишається в історії, але числа в «Залишку» не показує: інакше на екрані
+            // стояли б два різні залишки позиції.
+            const isUnaccounted = tx.accounted === false;
+            const missingFields = tx.missing_fields || [];
+            const unaccountedMark = isUnaccounted
+                ? `<span class="text-amber-400 ml-1 align-middle" title="Документ не в обліку. Не розпізнано: ${esc(missingFields.join(', '))}"><i class="fa-solid fa-triangle-exclamation"></i></span>`
+                : '';
             const isInc = tx.operation_type === 'income';
             let badge = isInc ? 'badge-income' : 'badge-expense';
             let label = isInc ? 'Прихід' : 'Розхід';
@@ -1025,15 +1034,15 @@ async function reloadTransactions(itemId) {
                 docDisplay = `<button onclick="event.stopPropagation(); viewDocument(${tx.document_id}, '${esc(tx.filename)}', '${tx.file_type}', '${esc(tx.source_row)}')"
                     class="text-slate-400 hover:text-blue-400 transition">
                     ${fileIcon} <span class="ml-1">${esc(tx.filename)}</span>
-                </button>${manualEditMark(tx.manual_edited)}`;
+                </button>${unaccountedMark}${manualEditMark(tx.manual_edited)}`;
             }
-            h += `<tr class="border-t border-slate-800/30">
+            h += `<tr class="border-t border-slate-800/30${isUnaccounted ? ' opacity-60' : ''}">
                 <td class="py-2 pr-3 text-slate-300" data-label="Дата">${esc(date)}</td>
                 <td class="py-2 pr-3" data-label="Тип"><span class="px-2 py-0.5 rounded-full text-[11px] font-medium ${badge}" ${isManual ? 'style="background: rgba(245, 158, 11, 0.15); color: #fbbf24;"' : ''}>${label}</span></td>
                 <td class="py-2 pr-3" data-label="Тип док.">${docTypeBadge}</td>
                 <td class="py-2 pr-3 text-right font-medium" data-label="Кількість">${qtyDisplay}</td>
                 <td class="py-2 pr-3 text-slate-300 font-mono" data-label="№ накл.">${esc(tx.doc_number)}</td>
-                <td class="py-2 pr-3 text-right text-blue-400 font-medium" data-label="Залишок">${fmtNum(tx.running_balance)}</td>
+                <td class="py-2 pr-3 text-right text-blue-400 font-medium" data-label="Залишок">${isUnaccounted ? '<span class="text-slate-500" title="Документ не в обліку — кількість не входить у залишок">—</span>' : fmtNum(tx.running_balance)}</td>
                 <td class="py-2 pr-3 break-words" data-label="Документ">${docDisplay}</td>
                 <td class="py-2 pr-3 text-slate-300 break-words" data-label="Затребував">${fmtRequestedBy(requestedBy)}</td>
                 <td class="py-2 pr-3 text-slate-300 break-words" data-label="Через кого">${fmtRequestedBy(requestedVia)}</td>
