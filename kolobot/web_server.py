@@ -379,6 +379,28 @@ HTML_PAGE = r"""<!DOCTYPE html>
         </div>
     </div>
 
+    <!-- Repeat Confirmation Modal -->
+    <div id="retry-modal" class="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm hidden flex items-center justify-center p-4">
+        <div class="glass w-full max-w-md rounded-2xl p-6 border border-amber-500/30 shadow-2xl text-center space-y-4">
+            <div class="w-12 h-12 rounded-full bg-amber-500/10 text-amber-400 flex items-center justify-center mx-auto text-xl border border-amber-500/20">
+                <i class="fa-solid fa-triangle-exclamation"></i>
+            </div>
+            <div>
+                <h3 class="text-lg font-bold text-slate-100">Повторити розпізнавання?</h3>
+                <p id="retry-doc-name" class="text-sm text-amber-300 mt-1 break-all"></p>
+                <p class="text-xs text-slate-500 mt-2">Розпізнавання замінить дані документа, тож ручні правки буде втрачено. Цю дію неможливо скасувати.</p>
+            </div>
+            <div class="flex items-center justify-center space-x-3 pt-2">
+                <button onclick="closeRetryModal()" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-medium rounded-xl transition">
+                    Скасувати
+                </button>
+                <button id="confirm-retry-btn" class="px-4 py-2 bg-amber-600 hover:bg-amber-500 text-white text-sm font-medium rounded-xl transition shadow-lg shadow-amber-600/30">
+                    Так, повторити
+                </button>
+            </div>
+        </div>
+    </div>
+
     <!-- Image Viewer Modal with Side-by-Side OCR Preview -->
     <div id="img-modal" class="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur-md hidden flex items-center justify-center p-4">
         <div class="glass w-full max-w-7xl max-h-[92vh] rounded-2xl flex flex-col border border-slate-700 shadow-2xl overflow-hidden">
@@ -1237,7 +1259,28 @@ async function smartPollTick() {
     checkSmartPolling();
 }
 
-async function retryDocument(docId) {
+// ---- Repeat ----
+
+// Повтор замінює дані документа, тож ручні правки буде втрачено — але питаємо
+// лише тоді, коли правки справді були. Інакше повтор іде одразу.
+function retryDocument(docId) {
+    const d = allDocs.find(x => x.id === docId);
+    if (d && d.manual_edited) {
+        openRetryModal(docId, d.filename);
+        return;
+    }
+    executeRetry(docId);
+}
+function openRetryModal(docId, filename) {
+    document.getElementById('retry-doc-name').innerText = filename;
+    document.getElementById('confirm-retry-btn').onclick = () => executeRetry(docId);
+    document.getElementById('retry-modal').classList.remove('hidden');
+}
+function closeRetryModal() {
+    document.getElementById('retry-modal').classList.add('hidden');
+}
+async function executeRetry(docId) {
+    closeRetryModal();
     try {
         const res = await fetch('/api/warehouse/documents/' + docId + '/retry', { method: 'POST' });
         const data = await res.json();

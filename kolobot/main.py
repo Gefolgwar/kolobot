@@ -289,6 +289,7 @@ def _save_to_warehouse(
     if existing_doc_id is not None:
         # Повторна обробка: транзакції попереднього проходу прибираємо ДО запису нових,
         # щоб прихід не подвоївся. Обидва записи йдуть однією транзакцією БД.
+        # Позначку ручного редагування скидаємо: значення документа знову машинні.
         wdb.clear_document_transactions(existing_doc_id)
         wdb.update_document(
             existing_doc_id,
@@ -303,6 +304,7 @@ def _save_to_warehouse(
             error_message="",
             requested_by=getattr(doc, "requested_by", ""),
             requested_via=getattr(doc, "requested_via", ""),
+            manual_edited=0,
         )
         wh_doc_id = existing_doc_id
     else:

@@ -3083,4 +3083,223 @@ async def test_item_row_and_manual_correction_row_get_no_unaccounted_marks(wareh
         db.close()
 
 
+# ---- Слайс #33: попередження про втрату ручних правок при повторі ----
+
+DELETE_MODAL_COMMENT = "<!-- Delete Confirmation Modal -->"
+RETRY_MODAL_COMMENT = "<!-- Repeat Confirmation Modal -->"
+RETRY_BLOCK_START = "// ---- Repeat ----"
+
+
+def _modal_classes(html, comment):
+    """Класи обгортки й картки вікна: [фон, картка]."""
+    parts = html.split(comment, 1)[1].split('class="')
+    return [parts[1].split('"', 1)[0], parts[2].split('"', 1)[0]]
+
+
+def _retry_block(html):
+    return html.split(RETRY_BLOCK_START, 1)[1].split("async function fetchDocs", 1)[0]
+
+
+# Клік по «Повторити» виконується справжнім JS сторінки; запити лише збираються.
+_DOC_REPEAT_STUBS = """
+const fs = require('fs');
+const payload = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+
+const els = {};
+function el(id) {
+    if (!els[id]) {
+        const classes = new Set();
+        els[id] = {
+            id: id, innerHTML: '', textContent: '', innerText: '', value: '', style: {}, onclick: null,
+            classList: {
+                add: c => classes.add(c),
+                remove: c => classes.delete(c),
+                contains: c => classes.has(c)
+            }
+        };
+    }
+    return els[id];
+}
+globalThis.document = { getElementById: el, addEventListener() {} };
+globalThis.window = { addEventListener() {} };
+globalThis.alert = () => {};
+
+const requests = [];
+globalThis.fetch = async (url, opts) => {
+    requests.push(url);
+    return { ok: true, status: 200, json: async () => (url.indexOf('/documents') !== -1 ? payload.docs : []) };
+};
+"""
+
+_DOC_REPEAT_DRIVER = """
+(async () => {
+    allDocs = payload.docs;
+    fetchDocs = async () => {};   // перезавантаження списку тут не перевіряється
+
+    const retries = () => requests.filter(url => url.indexOf('/retry') !== -1);
+    const snap = () => ({
+        modalOpen: !el('retry-modal').classList.contains('hidden'),
+        name: el('retry-doc-name').innerText,
+        retries: retries(),
+    });
+
+    retryDocument(payload.docs[0].id);
+    const afterClick = snap();
+
+    if (payload.mode === 'confirm') {
+        await el('confirm-retry-btn').onclick();
+        console.log(JSON.stringify({ afterClick: afterClick, afterConfirm: snap() }));
+    } else if (payload.mode === 'cancel') {
+        closeRetryModal();
+        console.log(JSON.stringify({ afterClick: afterClick, afterCancel: snap() }));
+    } else {
+        console.log(JSON.stringify({ afterClick: afterClick }));
+    }
+})();
+"""
+
+# Половина документа, якої досить для повтору: id, назва файлу й позначка правки.
+_REPEAT_DOC = {"id": 7, "filename": "nakladna_101.jpg", "manual_edited": True}
+
+
+def _run_repeat(html, docs, mode="none"):
+    """Проганяє повтор у node: клік по кнопці, а далі — підтвердження, скасування або нічого."""
+    page = html.split("<script>", 1)[1].split("</script>", 1)[0]
+    with tempfile.TemporaryDirectory() as tmp:
+        script = os.path.join(tmp, "doc_repeat.js")
+        payload_path = os.path.join(tmp, "payload.json")
+        with open(script, "w", encoding="utf-8") as fh:
+            fh.write(_DOC_REPEAT_STUBS + page + _DOC_REPEAT_DRIVER)
+        with open(payload_path, "w", encoding="utf-8") as fh:
+            json.dump({"docs": docs, "mode": mode}, fh)
+        proc = subprocess.run([NODE, script, payload_path],
+                              capture_output=True, text=True, encoding="utf-8")
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout)
+
+
+def _repeat_doc(doc_id, status, manual_edited):
+    """Рядок документа для перевірки видимості кнопки «Повторити»."""
+    return {"id": doc_id, "filename": f"f{doc_id}.pdf", "file_type": "pdf", "doc_type": "НАКЛАДНА",
+            "status": status, "uploaded_at": doc_id, "doc_number": str(doc_id),
+            "requested_by": "", "requested_via": "", "transaction_count": 0,
+            "manual_edited": manual_edited}
+
+
+def _rows_with_the_repeat_button(markup):
+    """id рядків, у яких намальовано кнопку «Повторити»."""
+    return [int(chunk.split("doc-chevron-")[1].split('"', 1)[0])
+            for chunk in markup.split("<tr ")[1:]
+            if "doc-chevron-" in chunk and "retryDocument(" in chunk]
+
+
+@pytest.mark.asyncio
+async def test_repeat_warning_reuses_the_delete_confirmation_style(warehouse_env):
+    """#33: попередження — така сама картка, як підтвердження видалення, а не діалог браузера."""
+    client, db, html = await _documents_page(warehouse_env)
+    try:
+        delete_overlay, delete_card = _modal_classes(html, DELETE_MODAL_COMMENT)
+        retry_overlay, retry_card = _modal_classes(html, RETRY_MODAL_COMMENT)
+
+        # та сама обгортка й та сама картка — відрізняється лише колір попередження
+        assert retry_overlay == delete_overlay
+        assert retry_card == delete_card.replace("red", "amber")
+
+        # усередині — назва файлу, «Скасувати» і підтвердження
+        modal = html.split(RETRY_MODAL_COMMENT, 1)[1].split("<!--", 1)[0]
+        assert modal.count("<button") == 2
+        assert 'id="retry-doc-name"' in modal
+        assert 'id="confirm-retry-btn"' in modal
+        assert "closeRetryModal()" in modal
+        assert "ручні правки буде втрачено" in modal
+
+        # жодного системного діалогу браузера на шляху повтору
+        block = _retry_block(html)
+        assert "confirm(" not in block
+        assert "retryDocument" in block and "/retry" in block
+    finally:
+        await client.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(NODE is None, reason="node недоступний — JS сторінки не виконати")
+async def test_repeat_of_a_manually_edited_document_warns_before_retrying(warehouse_env):
+    """#33: документ із позначкою правки спершу питає, і лише підтвердження запускає повтор."""
+    client, db, html = await _documents_page(warehouse_env)
+    try:
+        retry_url = f"/api/warehouse/documents/{_REPEAT_DOC['id']}/retry"
+        result = _run_repeat(html, [_REPEAT_DOC], mode="confirm")
+
+        # клік по кнопці спиняється на попередженні з назвою файлу — повтору ще немає
+        assert result["afterClick"] == {
+            "modalOpen": True,
+            "name": _REPEAT_DOC["filename"],
+            "retries": [],
+        }
+        # підтвердження у вікні повторює документ і закриває вікно
+        assert result["afterConfirm"] == {"modalOpen": False, "name": _REPEAT_DOC["filename"],
+                                          "retries": [retry_url]}
+    finally:
+        await client.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(NODE is None, reason="node недоступний — JS сторінки не виконати")
+async def test_cancelling_the_repeat_warning_does_not_retry(warehouse_env):
+    """#33: «Скасувати» закриває вікно й не чіпає документ."""
+    client, db, html = await _documents_page(warehouse_env)
+    try:
+        result = _run_repeat(html, [_REPEAT_DOC], mode="cancel")
+
+        assert result["afterClick"]["retries"] == []
+        assert result["afterCancel"]["modalOpen"] is False
+        assert result["afterCancel"]["retries"] == []
+    finally:
+        await client.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(NODE is None, reason="node недоступний — JS сторінки не виконати")
+async def test_repeat_without_manual_edits_goes_straight_through(warehouse_env):
+    """#33: без позначки правки вікна немає — кнопка повторює документ одразу."""
+    client, db, html = await _documents_page(warehouse_env)
+    try:
+        doc = dict(_REPEAT_DOC, manual_edited=False)
+        result = _run_repeat(html, [doc])
+
+        assert result["afterClick"] == {
+            "modalOpen": False,
+            "name": "",
+            "retries": [f"/api/warehouse/documents/{doc['id']}/retry"],
+        }
+    finally:
+        await client.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(NODE is None, reason="node недоступний — JS сторінки не виконати")
+async def test_repeat_button_stays_visible_only_for_error_documents(warehouse_env):
+    """#33: обсяг кнопки «Повторити» не змінився — вона лишається лише для статусу «помилка»."""
+    client, db, html = await _documents_page(warehouse_env)
+    try:
+        docs = [
+            _repeat_doc(1, "completed", manual_edited=True),
+            _repeat_doc(2, "error", manual_edited=False),
+            _repeat_doc(3, "error", manual_edited=True),
+            _repeat_doc(4, "processing_ocr", manual_edited=True),
+            _repeat_doc(5, "queued", manual_edited=True),
+        ]
+        markup = _run_doc_render(html, {"docs": docs, "sort": {"key": None, "dir": None}})
+
+        assert _rows_with_the_repeat_button(markup) == [2, 3]
+    finally:
+        await client.close()
+        db.close()
+
+
+
 
