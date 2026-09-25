@@ -57,7 +57,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 <body class="min-h-screen font-sans pb-12">
     <!-- Header -->
     <header class="glass sticky top-0 z-30 border-b border-slate-800 px-6 py-4 mb-0">
-        <div class="max-w-7xl mx-auto flex items-center justify-between">
+        <div class="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-y-2">
             <div class="flex items-center space-x-3">
                 <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-500 flex items-center justify-center text-white font-bold text-xl shadow-lg shadow-blue-500/20">
                     <i class="fa-solid fa-warehouse"></i>
@@ -67,7 +67,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     <p class="text-xs text-slate-400">Складський облік</p>
                 </div>
             </div>
-            <div class="flex items-center space-x-2">
+            <div class="flex flex-wrap items-center space-x-2 gap-y-2">
                 <label class="px-3 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium rounded-xl cursor-pointer transition shadow-lg shadow-blue-600/20">
                     <i class="fa-solid fa-file-import mr-1"></i> Імпорт Excel
                     <input type="file" accept=".xlsx,.xls" onchange="importExcel(this)" class="hidden">
@@ -293,12 +293,12 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <!-- Image Viewer Modal with Side-by-Side OCR Preview -->
     <div id="img-modal" class="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur-md hidden flex items-center justify-center p-4">
         <div class="glass w-full max-w-7xl max-h-[92vh] rounded-2xl flex flex-col border border-slate-700 shadow-2xl overflow-hidden">
-            <div class="px-6 py-3 border-b border-slate-800 flex items-center justify-between">
+            <div class="px-6 py-3 border-b border-slate-800 flex flex-wrap items-center justify-between gap-y-2">
                 <h3 id="img-modal-title" class="font-semibold text-lg text-slate-100 flex items-center gap-2">
                     <i class="fa-solid fa-image text-emerald-400"></i>
                     <span>Перегляд</span>
                 </h3>
-                <div class="flex items-center gap-2">
+                <div class="flex flex-wrap items-center gap-2">
                     <div class="flex items-center bg-slate-800 rounded-lg border border-slate-700">
                         <button id="img-zoom-out-btn" onclick="zoomImgOut()" class="px-2.5 py-1.5 text-slate-400 hover:text-white transition disabled:opacity-30 disabled:cursor-not-allowed" title="Зменшити (Ctrl+Scroll)">
                             <i class="fa-solid fa-minus text-xs"></i>
