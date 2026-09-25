@@ -54,12 +54,6 @@ class FileStore:
         txt_path.write_text(text or "", encoding="utf-8")
         return str(txt_path)
 
-    def get_text_path(self, doc_id: str) -> str | None:
-        path = self._base / f"{doc_id}.txt"
-        if path.exists() and path.is_file():
-            return str(path)
-        return None
-
     def read_text(self, doc_id: str) -> str | None:
         path = self._base / f"{doc_id}.txt"
         if path.exists() and path.is_file():

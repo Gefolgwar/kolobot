@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import io
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import openpyxl
 from openpyxl.styles import Font, Alignment, Border, Side

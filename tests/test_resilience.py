@@ -241,7 +241,7 @@ async def test_crash_recovery_finds_and_enqueues_unprocessed_documents(tmp_path)
 
         recovered_count = await service.recover_pending(default_chat_id=123, default_user_id=123)
         assert recovered_count == 3
-        assert service.get_queue_length() == 3
+        assert service.queue_size == 3
 
         # Completed and error documents are not modified
         assert db.get_document(id4)["status"] == "completed"

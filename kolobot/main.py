@@ -19,7 +19,7 @@ from aiogram.types import CallbackQuery, ErrorEvent, FSInputFile, InlineKeyboard
 
 from kolobot.archive_service import ArchiveService
 from kolobot.config import ConfigError, load_config
-from kolobot.doc_structurer import CardViewModel, DocStructurer, Document, normalize_doc_type
+from kolobot.doc_structurer import CardViewModel, DocStructurer, Document
 from kolobot.file_store import FileStore, _ext_from_mime
 from kolobot.gemini_gateway import GeminiError, GeminiGateway
 from kolobot.handlers.commands import cmd_clear, cmd_status, router as commands_router
@@ -28,7 +28,7 @@ from kolobot.handlers.media import MediaHandler
 from kolobot.intake_service import DocumentIntakeService
 from kolobot.key_pool import KeyPool, PoolKind
 from kolobot.log_service import setup_logging_capture
-from kolobot.messages import ACCESS_DENIED_UK, unaccounted_notice_uk
+from kolobot.messages import unaccounted_notice_uk
 from kolobot.middlewares.access import AccessMiddleware
 from kolobot.queue_service import DocumentQueueService, PendingCard, QueueItem
 from kolobot.rag_service import RagService

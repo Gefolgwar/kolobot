@@ -61,12 +61,3 @@ class MediaHandler:
             "ext": ext,
             "source": "photo" if photo else "document",
         }
-
-    def clear_pending(self) -> None:
-        """Compatibility no-op (single-flight is deprecated in favor of DocumentQueueService)."""
-        pass
-
-    @property
-    def is_pending(self) -> bool:
-        """Compatibility property."""
-        return False

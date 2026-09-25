@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from kolobot.file_store import FileStore, _ext_from_mime
 from kolobot.vector_store import VectorStore

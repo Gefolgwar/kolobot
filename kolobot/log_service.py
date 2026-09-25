@@ -133,10 +133,6 @@ class LogBuffer:
             self._buffer.clear()
             return count
 
-    def get_last_id(self) -> int:
-        with self._lock:
-            return self._seq
-
     def get_total_count(self) -> int:
         with self._lock:
             return len(self._buffer)

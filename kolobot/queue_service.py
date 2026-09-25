@@ -330,12 +330,6 @@ class DocumentQueueService:
     def queue_size(self) -> int:
         return self._queue.qsize()
 
-    def get_queue_length(self) -> int:
-        return self._queue.qsize()
-
-    def get_queue_size(self) -> int:
-        return self._queue.qsize()
-
     @property
     def is_processing(self) -> bool:
         return self._current_item is not None

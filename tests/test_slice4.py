@@ -177,7 +177,7 @@ async def test_queue_service_retry_document(tmp_path):
         assert item is not None
         assert item.wh_doc_id == doc_id
         assert item.tmp_path == str(f1)
-        assert service.get_queue_length() == 1
+        assert service.queue_size == 1
 
         # Check DB was updated to queued with error cleared
         doc = db.get_document(doc_id)
