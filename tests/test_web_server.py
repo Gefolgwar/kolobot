@@ -1182,4 +1182,33 @@ async def test_table_fields_wrap_instead_of_truncating(warehouse_env):
         db.close()
 
 
+@pytest.mark.asyncio
+async def test_tables_use_compact_cells(warehouse_env):
+    """Обидві таблиці компактизовано, а правила мають !important."""
+    db, fs, vs = warehouse_env
+    server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
+    client = TestClient(TestServer(server._app))
+    await client.start_server()
+
+    try:
+        html = await (await client.get("/")).text()
+
+        # клас стоїть на обох таблицях («Склад» і «Документи»)
+        assert html.count("border-collapse compact-table") == 2
+
+        # tracking-wider прибрано саме із заголовків таблиць (у логах він лишається)
+        assert html.count("uppercase tracking-wider border-b") == 0
+        assert html.count("text-slate-400 text-xs font-semibold uppercase border-b border-slate-800") == 2
+
+        # !important обов'язковий: Tailwind з CDN вставляє утиліти в <head> пізніше
+        # за вбудований <style>, тому без нього правила мовчки програють px-3 / py-4
+        assert ".compact-table > thead > tr > th" in html
+        assert ".compact-table > tbody > tr > td:not([colspan])" in html
+        assert "padding: 8px !important;" in html
+        assert "font-size: 10px !important;" in html
+    finally:
+        await client.close()
+        db.close()
+
+
 
