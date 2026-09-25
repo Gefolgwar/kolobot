@@ -1230,7 +1230,7 @@ async def test_documents_table_has_card_mode_markup(warehouse_env):
                       "Дата завантаження", "№ документа", "Затребував",
                       "Через кого", "Позицій", "Дії"):
             assert f'data-label="{label}"' in html, label
-        assert html.count('data-label="') == 11
+        assert html.count(' data-label="') == 11  # лише атрибути <td>, не CSS-селектори
 
         # шеврон і повноширинні клітинки розгорнутих блоків підпису не отримують
         assert '<td class="py-4 px-3"><i id="doc-chevron-' in html
@@ -1243,6 +1243,10 @@ async def test_documents_table_has_card_mode_markup(warehouse_env):
         assert "attr(data-label)" in html
         assert ".card-table thead { display: none; }" in html
         assert "innerWidth" not in html
+
+        # шеврон у картці переїжджає у правий верхній кут, а не лишається порожнім рядком
+        assert ".card-table > tbody > tr:not(.hidden) > td:first-child:not([colspan])" in html
+        assert "white-space: nowrap;" in html  # числа й дати не рвуться посеред значення
     finally:
         await client.close()
         db.close()

@@ -92,6 +92,19 @@ HTML_PAGE = r"""<!DOCTYPE html>
             /* Внутрішні flex-контейнери клітинок притискаємо до лівого краю */
             .card-table > tbody > tr > td > div.flex,
             .card-table > tbody > tr > td > span.flex { justify-content: flex-start !important; }
+            /* Шеврон переїжджає у правий верхній кут картки: як окрема перша клітинка
+               він інакше стає порожнім рядком угорі, який не читається як керування. */
+            .card-table > tbody > tr:not(.hidden) > td:first-child:not([colspan]) {
+                position: absolute;
+                top: 0.75rem;
+                right: 0.75rem;
+                width: auto;
+                padding: 0 !important;
+            }
+            /* Числа й дати не розриваються посеред значення */
+            .card-table > tbody > tr > td[data-label="Дата завантаження"],
+            .card-table > tbody > tr > td[data-label="№ документа"],
+            .card-table > tbody > tr > td[data-label="Позицій"] { white-space: nowrap; }
         }
     </style>
 </head>
