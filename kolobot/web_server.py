@@ -52,6 +52,47 @@ HTML_PAGE = r"""<!DOCTYPE html>
         .compact-table > thead > tr > th,
         .compact-table > tbody > tr > td:not([colspan]) { padding: 8px !important; }
         .compact-table > thead > tr > th { font-size: 10px !important; }
+        /* Картковий режим: нижче 1000px таблиця з класом-маркером .card-table стає картками.
+           Перемикання робить виключно CSS — у JS лишається один шаблон рядка, а підпис
+           клітинки береться з її атрибута data-label (текст дорівнює відповідному <th>).
+           Клітинки без data-label (шеврон і повноширинні блоки деталей) префікса не отримують.
+           Клас-маркер увімкнено явно, тому таблиці, ще не переведені на картки, не ламаються. */
+        @media (max-width: 999.98px) {
+            .card-table thead { display: none; }
+            .card-table,
+            .card-table > tbody { display: block; width: 100%; }
+            .card-table > tbody > tr:not(.hidden) {
+                display: block;
+                position: relative;
+                margin-bottom: 0.75rem;
+                padding: 0.75rem;
+                border: 1px solid rgba(30, 41, 59, 0.9);
+                border-radius: 0.75rem;
+                background: rgba(15, 23, 42, 0.45);
+            }
+            .card-table > tbody > tr > td,
+            .card-table > tbody > tr > td:not([colspan]) {
+                display: block;
+                width: auto;
+                padding: 2px 0 !important;
+                text-align: left !important;
+            }
+            .card-table > tbody > tr > td[colspan] { padding: 0 !important; }
+            .card-table > tbody > tr > td[data-label]::before {
+                content: attr(data-label) ": ";
+                font-size: 10px;
+                font-weight: 700;
+                text-transform: uppercase;
+                letter-spacing: 0.05em;
+                color: #94a3b8;
+            }
+            .card-table > tbody > tr > td:not([data-label])::before { content: none; }
+            /* Кнопки в картці мусять бути видимими без наведення миші */
+            .card-table > tbody > tr > td button { opacity: 1 !important; }
+            /* Внутрішні flex-контейнери клітинок притискаємо до лівого краю */
+            .card-table > tbody > tr > td > div.flex,
+            .card-table > tbody > tr > td > span.flex { justify-content: flex-start !important; }
+        }
     </style>
 </head>
 <body class="min-h-screen font-sans pb-12">
@@ -170,7 +211,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <main id="panel-documents" class="max-w-7xl mx-auto px-6 hidden">
         <div class="glass rounded-2xl border border-slate-800 overflow-hidden shadow-2xl">
             <div class="overflow-x-auto">
-                <table class="w-full text-left border-collapse compact-table">
+                <table class="w-full text-left border-collapse compact-table card-table">
                     <thead>
                         <tr class="bg-slate-900/90 text-slate-400 text-xs font-semibold uppercase border-b border-slate-800">
                             <th class="py-4 px-3 w-8"></th>
@@ -1098,21 +1139,21 @@ function renderDocs(docs) {
         html += `
         <tr class="hover:bg-slate-800/40 transition cursor-pointer" onclick="toggleDocImpact(${doc.id})">
             <td class="py-4 px-3"><i id="doc-chevron-${doc.id}" class="fa-solid fa-chevron-right text-[10px] text-slate-500 transition-transform"></i></td>
-            <td class="py-4 px-3">${previewBtn}</td>
-            <td class="py-4 px-3 font-medium text-slate-200 break-words">${esc(doc.filename)}</td>
-            <td class="py-4 px-3"><span class="px-2 py-0.5 rounded-full text-[11px] font-medium badge-import">${typeLabel}</span></td>
-            <td class="py-4 px-3">${docTypeBadge}</td>
-            <td class="py-4 px-3">${docStatusBadge(doc)}</td>
-            <td class="py-4 px-3 text-slate-300">${date}</td>
-            <td class="py-4 px-3 font-mono text-slate-300">${esc(doc.doc_number)}</td>
-            <td class="py-4 px-3 text-slate-300">
+            <td class="py-4 px-3" data-label="Превʼю">${previewBtn}</td>
+            <td class="py-4 px-3 font-medium text-slate-200 break-words" data-label="Файл">${esc(doc.filename)}</td>
+            <td class="py-4 px-3" data-label="Тип"><span class="px-2 py-0.5 rounded-full text-[11px] font-medium badge-import">${typeLabel}</span></td>
+            <td class="py-4 px-3" data-label="Тип документу">${docTypeBadge}</td>
+            <td class="py-4 px-3" data-label="Статус">${docStatusBadge(doc)}</td>
+            <td class="py-4 px-3 text-slate-300" data-label="Дата завантаження">${date}</td>
+            <td class="py-4 px-3 font-mono text-slate-300" data-label="№ документа">${esc(doc.doc_number)}</td>
+            <td class="py-4 px-3 text-slate-300" data-label="Затребував">
                 <span class="block break-words">${fmtRequestedBy(requestedBy)}</span>
             </td>
-            <td class="py-4 px-3 text-slate-300">
+            <td class="py-4 px-3 text-slate-300" data-label="Через кого">
                 <span class="block break-words">${fmtRequestedBy(requestedVia)}</span>
             </td>
-            <td class="py-4 px-3 text-blue-400 font-medium">${doc.transaction_count}</td>
-            <td class="py-4 px-3 text-right">
+            <td class="py-4 px-3 text-blue-400 font-medium" data-label="Позицій">${doc.transaction_count}</td>
+            <td class="py-4 px-3 text-right" data-label="Дії">
                 ${retryBtn}<button onclick="event.stopPropagation(); openDeleteModal(${doc.id}, '${esc(doc.filename)}')" class="p-2 text-slate-400 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition" title="Видалити">
                     <i class="fa-solid fa-trash"></i>
                 </button>

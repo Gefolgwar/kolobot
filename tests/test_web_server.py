@@ -1211,4 +1211,41 @@ async def test_tables_use_compact_cells(warehouse_env):
         db.close()
 
 
+@pytest.mark.asyncio
+async def test_documents_table_has_card_mode_markup(warehouse_env):
+    """Картковий режим нижче 1000px: маркер-клас, data-label і адаптивний CSS."""
+    db, fs, vs = warehouse_env
+    server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
+    client = TestClient(TestServer(server._app))
+    await client.start_server()
+
+    try:
+        html = await (await client.get("/")).text()
+
+        # маркер стоїть лише на таблиці «Документи» — «Склад» карткового режиму ще не має
+        assert html.count("compact-table card-table") == 1
+
+        # кожна клітинка рядка документа підписана текстом свого <th>
+        for label in ("Превʼю", "Файл", "Тип", "Тип документу", "Статус",
+                      "Дата завантаження", "№ документа", "Затребував",
+                      "Через кого", "Позицій", "Дії"):
+            assert f'data-label="{label}"' in html, label
+        assert html.count('data-label="') == 11
+
+        # шеврон і повноширинні клітинки розгорнутих блоків підпису не отримують
+        assert '<td class="py-4 px-3"><i id="doc-chevron-' in html
+        assert '<td colspan="12" class="p-0">' in html  # рядок деталей — без data-label
+
+        # перемикання таблиця/картки робить виключно CSS, без JS-розгалужень за шириною.
+        # 999.98px, а не 1000px: межа мусить працювати в обидва боки —
+        # при 1000px ще таблиця, при 999px уже картки.
+        assert "@media (max-width: 999.98px)" in html
+        assert "attr(data-label)" in html
+        assert ".card-table thead { display: none; }" in html
+        assert "innerWidth" not in html
+    finally:
+        await client.close()
+        db.close()
+
+
 
