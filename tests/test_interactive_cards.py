@@ -550,7 +550,7 @@ async def test_worker_auto_save_warehouse_and_vector_store(tmp_path):
 
         # Mock OCR extraction
         gateway.extract_document = AsyncMock(
-            return_value='{"doc_type": "НАКЛАДНА", "title": "Накладна № 777", "doc_number": "777", "doc_date": "10.08.2026", "items": [{"name": "Болт М8", "quantity": "50", "unit": "шт"}], "raw_text": "НАКЛАДНА № 777 Болт М8 50 шт"}'
+            return_value='{"doc_type": "НАКЛАДНА", "title": "Накладна № 777", "doc_number": "777", "doc_date": "10.08.2026", "requested_by": "начальник служби (ПІБ)", "requested_via": "7939 - (ПІБ)", "items": [{"name": "Болт М8", "quantity": "50", "unit": "шт"}], "raw_text": "НАКЛАДНА № 777 Болт М8 50 шт"}'
         )
         # Mock embedding
         gateway.embed_texts = AsyncMock(return_value=[[0.1] * 768])
@@ -707,6 +707,8 @@ async def test_vymoha_and_nakladna_warehouse_operations(tmp_path):
         summary="Вимога-накладна № 0000215 від 15.08.2026 року на видачу зі складу",
         doc_number="0000215",
         doc_date="15.08.2026",
+        requested_by="начальник служби (ПІБ)",
+        requested_via="7939 - (ПІБ)",
         items=[
             {
                 "num": 1,
@@ -736,6 +738,8 @@ async def test_vymoha_and_nakladna_warehouse_operations(tmp_path):
         summary="Прибуткова накладна від постачальника",
         doc_number="100",
         doc_date="01.08.2026",
+        requested_by="начальник служби (ПІБ)",
+        requested_via="7939 - (ПІБ)",
         items=[
             {
                 "num": 1,
@@ -802,6 +806,8 @@ async def test_vymoha_and_nakladna_warehouse_operations(tmp_path):
         summary="Накладна № 00002143 від 03.08.2026 на відпуск матеріалу КОНДЕНСАТОР КЕРАМІЧНИЙ 0.1мФ 50В у кількості 250 шт на суму 12.50 грн.",
         doc_number="00002143",
         doc_date="03.08.2026",
+        requested_by="начальник служби (ПІВ)",
+        requested_via="7939 - (ПІВ)",
         items=[
             {
                 "num": 1,
