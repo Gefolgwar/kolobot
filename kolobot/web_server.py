@@ -590,8 +590,8 @@ function renderItems(items) {
                 </div>
             </td>
             <td class="py-4 px-3 text-xs text-slate-400">
-                <div class="flex items-center justify-between gap-1 max-w-[170px]">
-                    <span id="item-notes-${it.id}" class="truncate" title="${esc(it.notes)}">${esc(it.notes)}</span>
+                <div class="flex items-center justify-between gap-1">
+                    <span id="item-notes-${it.id}" class="min-w-0 break-words">${esc(it.notes)}</span>
                     <button onclick="event.stopPropagation(); openEditModal(${it.id}, 'notes', '${esc(it.notes)}', 'Примітки')" class="text-slate-500 hover:text-blue-400 p-1 rounded transition opacity-0 hover:opacity-100 group-hover:opacity-100 shrink-0" title="Редагувати примітки">
                         <i class="fa-solid fa-pencil text-[10px]"></i>
                     </button>
@@ -812,7 +812,7 @@ async function reloadTransactions(itemId) {
             } else {
                 const fileIcon = getFileIcon(tx.file_type);
                 docDisplay = `<button onclick="event.stopPropagation(); viewDocument(${tx.document_id}, '${esc(tx.filename)}', '${tx.file_type}', '${esc(tx.source_row)}')"
-                    class="text-slate-400 hover:text-blue-400 transition" title="${esc(tx.filename)}">
+                    class="text-slate-400 hover:text-blue-400 transition">
                     ${fileIcon} <span class="ml-1">${esc(tx.filename)}</span>
                 </button>`;
             }
@@ -823,10 +823,10 @@ async function reloadTransactions(itemId) {
                 <td class="py-2 pr-3 text-right font-medium">${qtyDisplay}</td>
                 <td class="py-2 pr-3 text-slate-300 font-mono">${esc(tx.doc_number)}</td>
                 <td class="py-2 pr-3 text-right text-blue-400 font-medium">${fmtNum(tx.running_balance)}</td>
-                <td class="py-2 pr-3">${docDisplay}</td>
-                <td class="py-2 pr-3 text-slate-300 max-w-[160px] truncate" title="${esc(requestedBy)}">${fmtRequestedBy(requestedBy)}</td>
-                <td class="py-2 pr-3 text-slate-300 max-w-[160px] truncate" title="${esc(requestedVia)}">${fmtRequestedBy(requestedVia)}</td>
-                <td class="py-2 pr-3 text-slate-500 text-[11px] max-w-[200px] truncate" title="${esc(srcRow)}">${esc(srcRow)}</td>
+                <td class="py-2 pr-3 break-words">${docDisplay}</td>
+                <td class="py-2 pr-3 text-slate-300 break-words">${fmtRequestedBy(requestedBy)}</td>
+                <td class="py-2 pr-3 text-slate-300 break-words">${fmtRequestedBy(requestedVia)}</td>
+                <td class="py-2 pr-3 text-slate-500 text-[11px] break-words">${esc(srcRow)}</td>
             </tr>`;
         });
         h += '</tbody></table>';
@@ -1093,17 +1093,17 @@ function renderDocs(docs) {
         <tr class="hover:bg-slate-800/40 transition cursor-pointer" onclick="toggleDocImpact(${doc.id})">
             <td class="py-4 px-3"><i id="doc-chevron-${doc.id}" class="fa-solid fa-chevron-right text-[10px] text-slate-500 transition-transform"></i></td>
             <td class="py-4 px-3">${previewBtn}</td>
-            <td class="py-4 px-3 font-medium text-slate-200">${esc(doc.filename)}</td>
+            <td class="py-4 px-3 font-medium text-slate-200 break-words">${esc(doc.filename)}</td>
             <td class="py-4 px-3"><span class="px-2 py-0.5 rounded-full text-[11px] font-medium badge-import">${typeLabel}</span></td>
             <td class="py-4 px-3">${docTypeBadge}</td>
             <td class="py-4 px-3">${docStatusBadge(doc)}</td>
             <td class="py-4 px-3 text-slate-300">${date}</td>
             <td class="py-4 px-3 font-mono text-slate-300">${esc(doc.doc_number)}</td>
             <td class="py-4 px-3 text-slate-300">
-                <span class="block max-w-[160px] truncate" title="${esc(requestedBy)}">${fmtRequestedBy(requestedBy)}</span>
+                <span class="block break-words">${fmtRequestedBy(requestedBy)}</span>
             </td>
             <td class="py-4 px-3 text-slate-300">
-                <span class="block max-w-[105px] truncate" title="${esc(requestedVia)}">${fmtRequestedBy(requestedVia)}</span>
+                <span class="block break-words">${fmtRequestedBy(requestedVia)}</span>
             </td>
             <td class="py-4 px-3 text-blue-400 font-medium">${doc.transaction_count}</td>
             <td class="py-4 px-3 text-right">
@@ -1151,7 +1151,7 @@ async function reloadDocImpact(docId) {
             h += '<div class="absolute inset-0 bg-slate-950/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition duration-200"><span class="px-3 py-1.5 bg-blue-600/90 text-white rounded-lg text-xs font-medium shadow-lg"><i class="fa-solid fa-expand mr-1.5"></i>Відкрити в повному розмірі</span></div>';
             h += '</div>';
             h += '<div class="w-full flex items-center justify-between text-xs text-slate-400 px-1">';
-            h += '<span class="font-medium text-slate-300 truncate max-w-[200px]" title="' + esc(data.filename) + '"><i class="fa-solid fa-image text-emerald-400 mr-1.5"></i>' + esc(data.filename) + '</span>';
+            h += '<span class="font-medium text-slate-300 min-w-0 break-words"><i class="fa-solid fa-image text-emerald-400 mr-1.5"></i>' + esc(data.filename) + '</span>';
             h += '<button onclick="viewDocument(' + docId + ', \'' + esc(data.filename) + '\', \'' + data.file_type + '\')" class="text-blue-400 hover:text-blue-300 font-medium transition"><i class="fa-solid fa-magnifying-glass-plus mr-1"></i>Збільшити</button>';
             h += '</div>';
             h += '</div>';
@@ -1212,7 +1212,7 @@ async function reloadDocImpact(docId) {
                         </td>
                         <td class="py-1.5 pr-3 text-slate-200">
                             <div class="flex items-center justify-between gap-1">
-                                <span class="truncate max-w-[180px]" title="${esc(imp.name)}">${esc(imp.name)}</span>
+                                <span class="min-w-0 break-words">${esc(imp.name)}</span>
                                 <button onclick="event.stopPropagation(); openEditModal(${imp.item_id}, 'name', '${esc(imp.name)}', 'Найменування')" class="text-slate-500 hover:text-blue-400 p-0.5 rounded transition opacity-0 hover:opacity-100 group-hover:opacity-100 shrink-0" title="Редагувати найменування">
                                     <i class="fa-solid fa-pencil text-[10px]"></i>
                                 </button>
@@ -1235,7 +1235,7 @@ async function reloadDocImpact(docId) {
                                 </button>
                             </div>
                         </td>
-                        <td class="py-1.5 pr-3 text-slate-500 text-[11px] max-w-[200px] truncate" title="${esc(imp.source_row || '')}">${esc(imp.source_row || '')}</td>
+                        <td class="py-1.5 pr-3 text-slate-500 text-[11px] break-words">${esc(imp.source_row || '')}</td>
                     </tr>`;
                 });
                 h += '</tbody></table></div></div>';
@@ -1269,7 +1269,7 @@ async function reloadDocImpact(docId) {
                         </td>
                         <td class="py-2 pr-3 text-slate-200">
                             <div class="flex items-center justify-between gap-1">
-                                <span class="truncate max-w-[200px]" title="${esc(imp.name)}">${esc(imp.name)}</span>
+                                <span class="min-w-0 break-words">${esc(imp.name)}</span>
                                 <button onclick="event.stopPropagation(); openEditModal(${imp.item_id}, 'name', '${esc(imp.name)}', 'Найменування')" class="text-slate-500 hover:text-blue-400 p-0.5 rounded transition opacity-0 hover:opacity-100 group-hover:opacity-100 shrink-0" title="Редагувати найменування">
                                     <i class="fa-solid fa-pencil text-[10px]"></i>
                                 </button>
@@ -1292,7 +1292,7 @@ async function reloadDocImpact(docId) {
                                 </button>
                             </div>
                         </td>
-                        <td class="py-2 pr-3 text-slate-500 text-[11px] max-w-[250px] truncate" title="${esc(srcRow)}">${esc(srcRow)}</td>
+                        <td class="py-2 pr-3 text-slate-500 text-[11px] break-words">${esc(srcRow)}</td>
                     </tr>`;
                 });
                 h += '</tbody></table>';
@@ -1490,13 +1490,13 @@ async function loadDocumentOcr(docId) {
                 listHtml += `<div class="p-2.5 rounded-lg bg-slate-950/60 border border-slate-800/60 flex items-start justify-between gap-2 hover:border-slate-700/80 transition group">
                     <div class="min-w-0 flex-1">
                         <div class="flex items-center justify-between gap-1">
-                            <span class="font-medium text-slate-200 truncate" title="${esc(it.name)}">${idx + 1}. ${esc(it.name)}</span>
+                            <span class="font-medium text-slate-200 min-w-0 break-words">${idx + 1}. ${esc(it.name)}</span>
                             <button onclick="event.stopPropagation(); openEditModal(${it.item_id}, 'name', '${esc(it.name)}', 'Найменування')" class="text-slate-500 hover:text-blue-400 p-0.5 rounded transition opacity-0 hover:opacity-100 group-hover:opacity-100 shrink-0" title="Редагувати найменування">
                                 <i class="fa-solid fa-pencil text-[10px]"></i>
                             </button>
                         </div>
                         <div class="flex items-center justify-between gap-1 mt-0.5">
-                            <span class="text-[10px] text-slate-500 font-mono truncate">${esc(it.sku || '(без SKU)')}</span>
+                            <span class="text-[10px] text-slate-500 font-mono min-w-0 break-words">${esc(it.sku || '(без SKU)')}</span>
                             <button onclick="event.stopPropagation(); openEditModal(${it.item_id}, 'sku', '${esc(it.sku)}', 'Номенклатурний номер (SKU)')" class="text-slate-500 hover:text-blue-400 p-0.5 rounded transition opacity-0 hover:opacity-100 group-hover:opacity-100 shrink-0" title="Редагувати SKU">
                                 <i class="fa-solid fa-pencil text-[9px]"></i>
                             </button>
@@ -1881,7 +1881,7 @@ function renderLogs() {
         html += `<div class="hover:bg-slate-900/60 py-0.5 px-1.5 rounded transition flex items-start gap-2 text-[11px] font-mono leading-relaxed border-b border-slate-900/40">
             <span class="text-slate-500 shrink-0 select-none">${ts}</span>
             <span class="px-1.5 py-0.2 rounded text-[10px] font-bold shrink-0 ${lvlBg}">${lvl}</span>
-            <span class="text-slate-400 shrink-0 truncate max-w-[180px] select-none" title="${lg}">[${lg}]</span>
+            <span class="text-slate-400 shrink-0 select-none">[${lg}]</span>
             <span class="text-slate-200 break-words flex-1 select-text ${lvl === 'ERR' ? 'text-rose-300 font-semibold' : ''}">${formattedMsg}</span>
         </div>`;
     }

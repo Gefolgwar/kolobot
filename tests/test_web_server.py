@@ -1146,4 +1146,40 @@ async def test_documents_table_has_requested_by_column(warehouse_env):
         db.close()
 
 
+@pytest.mark.asyncio
+async def test_table_fields_wrap_instead_of_truncating(warehouse_env):
+    """Табличні поля переносяться рядками, а не обрізаються трикрапкою."""
+    db, fs, vs = warehouse_env
+    server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
+    client = TestClient(TestServer(server._app))
+    await client.start_server()
+
+    try:
+        html = await (await client.get("/")).text()
+        # "data.truncated" — прапорець обрізання OCR-тексту в API, не CSS-клас
+        markup = html.replace("data.truncated", "")
+
+        assert "truncate" not in markup
+        for legacy_width in ("max-w-[105px]", "max-w-[160px]", "max-w-[170px]",
+                             "max-w-[180px]", "max-w-[200px]", "max-w-[250px]"):
+            assert legacy_width not in markup
+
+        # перенос рядків у клітинках дозволено
+        assert markup.count("break-words") >= 10
+
+        # title-підказки, що лише компенсували обрізання, прибрані
+        assert 'title="${esc(requestedBy)}"' not in html
+        assert 'title="${esc(requestedVia)}"' not in html
+        assert 'title="${esc(it.notes)}"' not in html
+        assert 'title="${esc(imp.name)}"' not in html
+        assert 'title="${esc(srcRow)}"' not in html
+        assert 'title="${esc(tx.filename)}"' not in html
+
+        # підказка з текстом помилки на бейджі статусу лишається
+        assert 'title="${esc(doc.error_message)}"' in html
+    finally:
+        await client.close()
+        db.close()
+
+
 
