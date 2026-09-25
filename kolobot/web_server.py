@@ -104,7 +104,17 @@ HTML_PAGE = r"""<!DOCTYPE html>
             /* Числа й дати не розриваються посеред значення */
             .card-table > tbody > tr > td[data-label="Дата завантаження"],
             .card-table > tbody > tr > td[data-label="№ документа"],
-            .card-table > tbody > tr > td[data-label="Позицій"] { white-space: nowrap; }
+            .card-table > tbody > tr > td[data-label="Позицій"],
+            .card-table > tbody > tr > td[data-label="Прихід"],
+            .card-table > tbody > tr > td[data-label="Розхід"],
+            .card-table > tbody > tr > td[data-label="Залишок"],
+            .card-table > tbody > tr > td[data-label="Мін. залишок"] { white-space: nowrap; }
+            /* Підсвітка «нижче мінімуму»: рамка й тло картки специфічніші за утиліти Tailwind
+               з CDN, тому бордюр і тон позиції доводиться повертати явно за маркером row-low. */
+            .card-table > tbody > tr.row-low {
+                border-left: 4px solid #f43f5e !important;
+                background: rgba(76, 5, 25, 0.55) !important;
+            }
         }
     </style>
 </head>
@@ -194,7 +204,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
         <div class="glass rounded-2xl border border-slate-800 overflow-hidden shadow-2xl">
             <div class="overflow-x-auto">
-                <table class="w-full text-left border-collapse compact-table">
+                <table class="w-full text-left border-collapse compact-table card-table">
                     <thead>
                         <tr class="bg-slate-900/90 text-slate-400 text-xs font-semibold uppercase border-b border-slate-800">
                             <th class="py-4 px-3 w-8"></th>
@@ -589,7 +599,9 @@ function renderItems(items) {
 
         let rowClass = 'hover:bg-slate-800/40 transition cursor-pointer group';
         if (isBelowMin) {
-            rowClass = 'bg-rose-950/40 hover:bg-rose-900/50 border-l-4 border-l-rose-500 transition cursor-pointer group shadow-[inset_0_0_20px_rgba(244,63,94,0.15)] text-rose-100';
+            // клас-маркер row-low: у картковому режимі CSS картки перебиває рамку й тло,
+            // тож підсвітку «нижче мінімуму» доводиться повертати окремим правилом
+            rowClass = 'row-low bg-rose-950/40 hover:bg-rose-900/50 border-l-4 border-l-rose-500 transition cursor-pointer group shadow-[inset_0_0_20px_rgba(244,63,94,0.15)] text-rose-100';
         }
 
         const balClass = isBelowMin ? 'text-rose-400 font-bold' : (bal > 0 ? 'text-blue-400 font-bold' : (bal < 0 ? 'text-red-400 font-bold' : 'text-slate-500 font-bold'));
@@ -599,7 +611,7 @@ function renderItems(items) {
         html += `
         <tr class="${rowClass}" onclick="toggleTransactions(${it.id})">
             <td class="py-4 px-3"><i id="chevron-${it.id}" class="fa-solid fa-chevron-right text-[10px] ${isBelowMin ? 'text-rose-400' : 'text-slate-500'} transition-transform"></i></td>
-            <td class="py-4 px-3 font-mono text-xs text-slate-400">
+            <td class="py-4 px-3 font-mono text-xs text-slate-400" data-label="Ном. номер">
                 <div class="flex items-center justify-between gap-1">
                     <span id="item-sku-${it.id}">${esc(it.sku)}</span>
                     <button onclick="event.stopPropagation(); openEditModal(${it.id}, 'sku', '${esc(it.sku)}', 'Номенклатурний номер (SKU)')" class="text-slate-500 hover:text-blue-400 p-1 rounded transition opacity-0 hover:opacity-100 group-hover:opacity-100" title="Редагувати номенклатурний номер">
@@ -607,7 +619,7 @@ function renderItems(items) {
                     </button>
                 </div>
             </td>
-            <td class="py-4 px-3 font-medium ${isBelowMin ? 'text-rose-100 font-semibold' : 'text-slate-200'}">
+            <td class="py-4 px-3 font-medium ${isBelowMin ? 'text-rose-100 font-semibold' : 'text-slate-200'}" data-label="Найменування">
                 <div class="flex items-center justify-between gap-1">
                     <span id="item-name-${it.id}">${esc(it.name)} ${isBelowMin ? '<i class="fa-solid fa-triangle-exclamation text-rose-400 text-xs ml-1" title="Залишок менше мінімального!"></i>' : ''}</span>
                     <button onclick="event.stopPropagation(); openEditModal(${it.id}, 'name', '${esc(it.name)}', 'Найменування')" class="text-slate-500 hover:text-blue-400 p-1 rounded transition opacity-0 hover:opacity-100 group-hover:opacity-100" title="Редагувати найменування">
@@ -615,9 +627,9 @@ function renderItems(items) {
                     </button>
                 </div>
             </td>
-            <td class="py-4 px-3 text-emerald-400 font-medium">${fmtNum(it.total_income)}</td>
-            <td class="py-4 px-3 text-rose-400 font-medium">${fmtNum(it.total_expense)}</td>
-            <td class="py-4 px-3 ${balClass}">
+            <td class="py-4 px-3 text-emerald-400 font-medium" data-label="Прихід">${fmtNum(it.total_income)}</td>
+            <td class="py-4 px-3 text-rose-400 font-medium" data-label="Розхід">${fmtNum(it.total_expense)}</td>
+            <td class="py-4 px-3 ${balClass}" data-label="Залишок">
                 <div class="flex items-center justify-between gap-1">
                     <span id="item-balance-${it.id}">${fmtNum(bal)}</span>
                     <button onclick="event.stopPropagation(); openEditModal(${it.id}, 'balance', '${bal}', 'Залишок (кількість)')" class="text-slate-500 hover:text-blue-400 p-1 rounded transition opacity-0 hover:opacity-100 group-hover:opacity-100" title="Редагувати залишок">
@@ -625,7 +637,7 @@ function renderItems(items) {
                     </button>
                 </div>
             </td>
-            <td class="py-4 px-3 ${minBalClass}">
+            <td class="py-4 px-3 ${minBalClass}" data-label="Мін. залишок">
                 <div class="flex items-center justify-between gap-1">
                     <span id="item-min-balance-${it.id}">${minBalDisplay}</span>
                     <button onclick="event.stopPropagation(); openEditModal(${it.id}, 'min_balance', '${minBal > 0 ? minBal : ''}', 'Мінімальний залишок')" class="text-slate-500 hover:text-blue-400 p-1 rounded transition opacity-0 hover:opacity-100 group-hover:opacity-100" title="Встановити мінімальний залишок">
@@ -633,7 +645,7 @@ function renderItems(items) {
                     </button>
                 </div>
             </td>
-            <td class="py-4 px-3 text-slate-400">
+            <td class="py-4 px-3 text-slate-400" data-label="Од.виміру">
                 <div class="flex items-center justify-between gap-1">
                     <span id="item-unit-${it.id}">${esc(it.unit)}</span>
                     <button onclick="event.stopPropagation(); openEditModal(${it.id}, 'unit', '${esc(it.unit)}', 'Одиниця виміру')" class="text-slate-500 hover:text-blue-400 p-1 rounded transition opacity-0 hover:opacity-100 group-hover:opacity-100" title="Редагувати одиницю виміру">
@@ -641,7 +653,7 @@ function renderItems(items) {
                     </button>
                 </div>
             </td>
-            <td class="py-4 px-3 text-slate-300">
+            <td class="py-4 px-3 text-slate-300" data-label="Постачальник">
                 <div class="flex items-center justify-between gap-1">
                     <span id="item-supplier-${it.id}">${esc(it.supplier)}</span>
                     <button onclick="event.stopPropagation(); openEditModal(${it.id}, 'supplier', '${esc(it.supplier)}', 'Постачальник')" class="text-slate-500 hover:text-blue-400 p-1 rounded transition opacity-0 hover:opacity-100 group-hover:opacity-100" title="Редагувати постачальника">
@@ -649,7 +661,7 @@ function renderItems(items) {
                     </button>
                 </div>
             </td>
-            <td class="py-4 px-3 text-xs text-slate-400">
+            <td class="py-4 px-3 text-xs text-slate-400" data-label="Примітки">
                 <div class="flex items-center justify-between gap-1">
                     <span id="item-notes-${it.id}" class="min-w-0 break-words">${esc(it.notes)}</span>
                     <button onclick="event.stopPropagation(); openEditModal(${it.id}, 'notes', '${esc(it.notes)}', 'Примітки')" class="text-slate-500 hover:text-blue-400 p-1 rounded transition opacity-0 hover:opacity-100 group-hover:opacity-100 shrink-0" title="Редагувати примітки">

@@ -1222,15 +1222,15 @@ async def test_documents_table_has_card_mode_markup(warehouse_env):
     try:
         html = await (await client.get("/")).text()
 
-        # маркер стоїть лише на таблиці «Документи» — «Склад» карткового режиму ще не має
-        assert html.count("compact-table card-table") == 1
+        # маркер стоїть на обох таблицях — «Склад» доєднався у слайсі #22
+        assert html.count("compact-table card-table") == 2
 
         # кожна клітинка рядка документа підписана текстом свого <th>
         for label in ("Превʼю", "Файл", "Тип", "Тип документу", "Статус",
                       "Дата завантаження", "№ документа", "Затребував",
                       "Через кого", "Позицій", "Дії"):
             assert f'data-label="{label}"' in html, label
-        assert html.count(' data-label="') == 11  # лише атрибути <td>, не CSS-селектори
+        assert html.count(' data-label="') == 20  # 11 у «Документах» + 9 у «Складі», лише атрибути <td>
 
         # шеврон і повноширинні клітинки розгорнутих блоків підпису не отримують
         assert '<td class="py-4 px-3"><i id="doc-chevron-' in html
@@ -1247,6 +1247,45 @@ async def test_documents_table_has_card_mode_markup(warehouse_env):
         # шеврон у картці переїжджає у правий верхній кут, а не лишається порожнім рядком
         assert ".card-table > tbody > tr:not(.hidden) > td:first-child:not([colspan])" in html
         assert "white-space: nowrap;" in html  # числа й дати не рвуться посеред значення
+    finally:
+        await client.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_warehouse_table_has_card_mode_markup(warehouse_env):
+    """Слайс #22: таблиця «Склад» стає картками, олівці видимі й стоять біля значення."""
+    db, fs, vs = warehouse_env
+    server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
+    client = TestClient(TestServer(server._app))
+    await client.start_server()
+
+    try:
+        html = await (await client.get("/")).text()
+
+        # кожна з дев'яти підписаних колонок складу підписується текстом свого <th>
+        for label in ("Ном. номер", "Найменування", "Прихід", "Розхід", "Залишок",
+                      "Мін. залишок", "Од.виміру", "Постачальник", "Примітки"):
+            assert f'data-label="{label}"' in html, label
+
+        # десята колонка — шеврон: підпису не має, як і рядок розгорнутих транзакцій
+        assert '<td class="py-4 px-3"><i id="chevron-' in html
+        assert '<td colspan="10" class="p-0">' in html
+
+        # олівці редагування: у картці вони opacity-1 без наведення, а justify-content
+        # flex-start перебиває утиліту justify-between, тож олівець стоїть біля значення
+        assert ".card-table > tbody > tr > td button { opacity: 1 !important; }" in html
+        assert ".card-table > tbody > tr > td > span.flex { justify-content: flex-start !important; }" in html
+
+        # підсвітка «нижче мінімуму»: правило картки специфічніше за утиліти Tailwind з CDN,
+        # тому рамку й тло повертає окреме правило за маркером row-low
+        assert "rowClass = 'row-low bg-rose-950/40" in html
+        assert ".card-table > tbody > tr.row-low" in html
+        assert "border-left: 4px solid #f43f5e !important;" in html
+
+        # числові колонки складу не рвуться посеред значення
+        for label in ("Прихід", "Розхід", "Залишок", "Мін. залишок"):
+            assert f'.card-table > tbody > tr > td[data-label="{label}"]' in html, label
     finally:
         await client.close()
         db.close()
