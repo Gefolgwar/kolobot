@@ -42,6 +42,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
         .badge-queued { background: rgba(245,158,11,0.15); color: #fbbf24; }
         .badge-ocr { background: rgba(59,130,246,0.15); color: #60a5fa; }
         .badge-emb { background: rgba(168,85,247,0.15); color: #c084fc; }
+        /* Дубль номера документа (#26): підсвічується клітинка «№ документа», не рядок.
+           Клас носить сама клітинка, тому з text-slate-300 він не змагається. */
+        .doc-dup { background: rgba(168,85,247,0.15); color: #d8b4fe; }
         .progress-bar { transition: width 0.3s ease; }
         .cursor-blink { animation: blink 1s step-end infinite; }
         @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
@@ -1245,6 +1248,8 @@ async function fetchDocs() {
 // ---- Сортування таблиці документів (#25) ----
 // Порядок рядків у SQL лишається незмінним: сортування переставляє лише той
 // список, який сторінка вже завантажила, і тримає свій стан у памʼяті сторінки.
+// Тут живуть і спільні помічники порівняння: нормалізацію номера документа
+// використовує й підсвічування дублів (#26), другої такої функції немає.
 
 // Стан сортування живе поряд зі станом фільтра й застосовується при кожному
 // рендері, тож переживає автооновлення і скидається лише перезавантаженням сторінки.
@@ -1257,7 +1262,6 @@ function comparePlainText(a, b) {
 }
 
 // Числове подання значення колонки: 10 → 10, «№ 0002143» → 2143, «—» → NaN.
-// Спільний помічник для номерів і кількостей — ним користуватиметься й підсвічування дублів.
 function numericValue(v) {
     if (v === null || v === undefined) return NaN;
     if (typeof v === 'number') return v;
@@ -1272,6 +1276,18 @@ function compareNumericValues(a, b) {
     const nb = numericValue(b);
     if (!isNaN(na) && !isNaN(nb)) return na < nb ? -1 : (na > nb ? 1 : 0);
     return comparePlainText(a, b);
+}
+
+// Ключ порівняння номера документа — один на сортування й на пошук дублів (#26).
+// «№ 1234», «N1234» і «1234» з різними пробілами та регістром — той самий номер.
+// Провідні нулі не прибираються: «0002143» і «2143» — різні номери.
+function normalizeDocNumber(v) {
+    return String(v == null ? '' : v).replace(/[\s№n]/gi, '').toLowerCase();
+}
+
+// Номер документа сортується за тим самим ключем: «10» після «9».
+function compareDocNumbers(a, b) {
+    return compareNumericValues(normalizeDocNumber(a), normalizeDocNumber(b));
 }
 
 // Життєвий цикл документа — саме цей порядок, а не алфавіт.
@@ -1292,7 +1308,7 @@ const DOC_SORT_COLUMNS = {
     doc_type:          { get: d => d.doc_type,              compare: comparePlainText },
     status:            { get: d => d.status || 'completed', compare: compareDocStatus },
     uploaded_at:       { get: d => d.uploaded_at,           compare: compareNumericValues },
-    doc_number:        { get: d => d.doc_number,            compare: compareNumericValues },
+    doc_number:        { get: d => d.doc_number,            compare: compareDocNumbers },
     requested_by:      { get: d => d.requested_by,          compare: comparePlainText },
     requested_via:     { get: d => d.requested_via,         compare: comparePlainText },
     transaction_count: { get: d => d.transaction_count,     compare: compareNumericValues },
@@ -1342,9 +1358,24 @@ function renderDocSortIndicators() {
 }
 // ---- Кінець сортування таблиці документів (#25) ----
 
+// ---- Підсвічування дублів «№ документа» (#26) ----
+// Дублі рахуються по всьому завантаженому списку, а не по відфільтрованому,
+// і не залежать від сортування: ключ той самий, що й у сортуванні.
+function docNumberTwinCounts() {
+    const counts = {};
+    allDocs.forEach(d => {
+        const key = normalizeDocNumber(d.doc_number);
+        if (!key) return;  // порожній номер дублем не вважається
+        counts[key] = (counts[key] || 0) + 1;
+    });
+    return counts;
+}
+// ---- Кінець підсвічування дублів (#26) ----
+
 function renderDocs(docs) {
     lastRenderedDocs = docs;
     const sorted = applyDocSort(docs);
+    const twinCounts = docNumberTwinCounts();
     const tbody = document.getElementById('docs-tbody');
     if (sorted.length === 0) {
         tbody.innerHTML = '<tr><td colspan="12" class="py-12 text-center text-slate-500"><p>Документів немає.</p></td></tr>';
@@ -1358,6 +1389,13 @@ function renderDocs(docs) {
         const docType = doc.doc_type || '';
         const requestedBy = doc.requested_by || '';
         const requestedVia = doc.requested_via || '';
+        // Дубль номера: підсвічується сама клітинка, а не рядок
+        const docNumberKey = normalizeDocNumber(doc.doc_number);
+        const twinCount = docNumberKey ? (twinCounts[docNumberKey] || 1) - 1 : 0;
+        const docNumberCls = twinCount ? 'doc-dup' : 'text-slate-300';
+        const docNumberTwin = twinCount
+            ? `<span class="text-purple-300 ml-1" title="Такий самий номер ще в ${twinCount} документах"><i class="fa-solid fa-clone"></i></span>`
+            : '';
         let docTypeBadge = '';
         if (docType === 'НАКЛАДНА') {
             docTypeBadge = '<span class="px-2 py-0.5 rounded-full text-[11px] font-medium badge-nakladna"><i class="fa-solid fa-arrow-down mr-1"></i>Накладна</span>';
@@ -1399,7 +1437,7 @@ function renderDocs(docs) {
             <td class="py-4 px-3" data-label="Тип документу">${docTypeBadge}</td>
             <td class="py-4 px-3" data-label="Статус">${docStatusBadge(doc)}</td>
             <td class="py-4 px-3 text-slate-300" data-label="Дата завантаження">${date}</td>
-            <td class="py-4 px-3 font-mono text-slate-300" data-label="№ документа">${esc(doc.doc_number)}</td>
+            <td class="py-4 px-3 font-mono ${docNumberCls}" data-label="№ документа">${esc(doc.doc_number)}${docNumberTwin}</td>
             <td class="py-4 px-3 text-slate-300" data-label="Затребував">
                 <span class="block break-words">${fmtRequestedBy(requestedBy)}</span>
             </td>

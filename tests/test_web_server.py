@@ -2234,4 +2234,207 @@ async def test_manual_edit_mark_is_rendered_in_documents_and_warehouse_rows(ware
         db.close()
 
 
+# ---- Слайс #26: підсвічування дублів «№ документа» ----
+
+# Нормалізація номера — одна на сортування й на дублі: другої такої функції бути не має.
+DOC_DUP_KEY_HELPER = "function normalizeDocNumber("
+
+# Оточення браузера для всієї сторінки: рендер малює справжню розмітку, DOM лише приймає її.
+_DOC_DUP_STUBS = """
+const fs = require('fs');
+const payload = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+
+const els = {};
+globalThis.document = {
+    getElementById: id => (els[id] = els[id] || { innerHTML: '', style: {}, textContent: '' }),
+    addEventListener() {},
+};
+globalThis.window = { addEventListener() {} };
+"""
+
+_DOC_DUP_DRIVER = """
+allDocs = payload.docs;
+docSort = payload.sort || { key: null, dir: null };
+const shown = payload.shown ? allDocs.filter(d => payload.shown.indexOf(d.id) !== -1) : allDocs;
+renderDocs(shown);
+console.log(JSON.stringify({ html: els['docs-tbody'].innerHTML, sort: docSort }));
+"""
+
+
+def _run_doc_render(html, payload):
+    """Малює таблицю документів справжнім JS сторінки в node і повертає розмітку тіла."""
+    page = html.split("<script>", 1)[1].split("</script>", 1)[0]
+    with tempfile.TemporaryDirectory() as tmp:
+        script = os.path.join(tmp, "doc_dup.js")
+        payload_path = os.path.join(tmp, "payload.json")
+        with open(script, "w", encoding="utf-8") as fh:
+            fh.write(_DOC_DUP_STUBS + page + _DOC_DUP_DRIVER)
+        with open(payload_path, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh)
+        proc = subprocess.run([NODE, script, payload_path],
+                              capture_output=True, text=True, encoding="utf-8")
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout)["html"]
+
+
+def _rendered_doc_rows(markup):
+    """Розбирає розмітку тіла: {id: класи рядка, класи клітинки «№ документа», її вміст}."""
+    rows = {}
+    for chunk in markup.split("<tr ")[1:]:
+        if "doc-chevron-" not in chunk:
+            continue
+        doc_id = int(chunk.split("doc-chevron-")[1].split('"')[0])
+        rows[doc_id] = {
+            "row_class": chunk.split('class="', 1)[1].split('"', 1)[0],
+            "cell_class": chunk.split('data-label="№ документа">')[0].rsplit('<td class="', 1)[1].split('"', 1)[0],
+            "cell": chunk.split('data-label="№ документа">')[1].split("</td>")[0],
+        }
+    return rows
+
+
+def _dup_doc(doc_id, doc_number):
+    return {"id": doc_id, "filename": f"f{doc_id}.pdf", "file_type": "pdf", "doc_type": "НАКЛАДНА",
+            "status": "completed", "uploaded_at": doc_id, "doc_number": doc_number,
+            "requested_by": "", "requested_via": "", "transaction_count": doc_id}
+
+
+DOC_DUP_DOCS = [
+    # «№ 1234», «n 1234» і «1234» з різними пробілами та регістром — один номер, троє документів
+    _dup_doc(1, "№ 1234"),
+    _dup_doc(2, "n 1234"),
+    _dup_doc(3, " 1234 "),
+    # порожній номер дублем не вважається — навіть коли порожніх документів кілька
+    _dup_doc(4, ""),
+    _dup_doc(5, "   "),
+    # провідні нулі не прибираються: це різні номери
+    _dup_doc(6, "0002143"),
+    _dup_doc(7, "2143"),
+    # єдине входження
+    _dup_doc(8, "9"),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(NODE is None, reason="node недоступний — JS сторінки не виконати")
+async def test_duplicate_document_numbers_are_highlighted_with_a_twin_tooltip(warehouse_env):
+    """#26: однаковий нормалізований номер підсвічує клітинку й показує, скільки ще двійників."""
+    client, db, html = await _documents_page(warehouse_env)
+    try:
+        rows = _rendered_doc_rows(_run_doc_render(html, {"docs": DOC_DUP_DOCS}))
+
+        for doc_id in (1, 2, 3):
+            assert "doc-dup" in rows[doc_id]["cell_class"], doc_id
+            assert "fa-clone" in rows[doc_id]["cell"]
+            assert 'title="Такий самий номер ще в 2 документах"' in rows[doc_id]["cell"], doc_id
+
+        # підсвічується клітинка, а не рядок: клас рядка в усіх документах однаковий
+        for doc_id, row in rows.items():
+            assert "doc-dup" not in row["row_class"], doc_id
+            assert row["row_class"] == "hover:bg-slate-800/40 transition cursor-pointer"
+
+        # порожній номер (і самотній, і в компанії іншого порожнього) — не дубль
+        for doc_id in (4, 5):
+            assert "doc-dup" not in rows[doc_id]["cell_class"], doc_id
+            assert "fa-clone" not in rows[doc_id]["cell"], doc_id
+
+        # «0002143» і «2143» — різні номери, як і одиничне «9»
+        for doc_id in (6, 7, 8):
+            assert "doc-dup" not in rows[doc_id]["cell_class"], doc_id
+            assert "fa-clone" not in rows[doc_id]["cell"], doc_id
+    finally:
+        await client.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(NODE is None, reason="node недоступний — JS сторінки не виконати")
+async def test_duplicate_highlight_does_not_depend_on_sorting(warehouse_env):
+    """#26: підсвічування працює незалежно від того, чи застосовано сортування."""
+    client, db, html = await _documents_page(warehouse_env)
+    try:
+        def highlighted(sort):
+            rows = _rendered_doc_rows(_run_doc_render(html, {"docs": DOC_DUP_DOCS, "sort": sort}))
+            order = list(rows)
+            return order, {d: ("doc-dup" in r["cell_class"], r["cell"]) for d, r in rows.items()}
+
+        default_order, default_marks = highlighted({"key": None, "dir": None})
+        asc_order, asc_marks = highlighted({"key": "doc_number", "dir": "asc"})
+        desc_order, desc_marks = highlighted({"key": "doc_number", "dir": "desc"})
+
+        # порядок рядків різний — а підсвічування те саме;
+        # порожні номери лишаються в кінці в обох напрямках
+        assert default_order == [1, 2, 3, 4, 5, 6, 7, 8]
+        assert asc_order == [8, 1, 2, 3, 6, 7, 4, 5]
+        assert desc_order == [6, 7, 1, 2, 3, 8, 4, 5]
+        assert asc_marks == default_marks
+        assert desc_marks == default_marks
+    finally:
+        await client.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(NODE is None, reason="node недоступний — JS сторінки не виконати")
+async def test_duplicate_count_covers_the_whole_list_not_the_filtered_one(warehouse_env):
+    """#26: двійники рахуються по всьому завантаженому списку, а не по показаному."""
+    client, db, html = await _documents_page(warehouse_env)
+    try:
+        # показано лише один документ із трійці — підказка все одно про двох двійників
+        rows = _rendered_doc_rows(_run_doc_render(html, {"docs": DOC_DUP_DOCS, "shown": [2]}))
+        assert list(rows) == [2]
+        assert "doc-dup" in rows[2]["cell_class"]
+        assert 'title="Такий самий номер ще в 2 документах"' in rows[2]["cell"]
+
+        # єдиний показаний документ без двійників лишається не підсвіченим
+        lonely = _rendered_doc_rows(_run_doc_render(html, {"docs": DOC_DUP_DOCS, "shown": [8]}))
+        assert "doc-dup" not in lonely[8]["cell_class"]
+    finally:
+        await client.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_doc_number_normalisation_is_shared_with_sorting(warehouse_env):
+    """#26: ключ порівняння номера один — і для сортування, і для пошуку дублів."""
+    client, db, html = await _documents_page(warehouse_env)
+    try:
+        assert html.count(DOC_DUP_KEY_HELPER) == 1
+
+        key_helper = html.split(DOC_DUP_KEY_HELPER)[1].split("\n}")[0]
+        assert r".replace(/[\s№n]/gi, '').toLowerCase()" in key_helper
+
+        # сортування номера йде через той самий ключ
+        assert "compareDocNumbers(a, b)" in html
+        assert "compareNumericValues(normalizeDocNumber(a), normalizeDocNumber(b))" in html
+        assert "doc_number:        { get: d => d.doc_number,            compare: compareDocNumbers }" in html
+
+        # пошук дублів — теж через нього, і саме по allDocs
+        dup_block = html.split("function docNumberTwinCounts()")[1].split("\n}")[0]
+        assert "normalizeDocNumber(d.doc_number)" in dup_block
+        assert "allDocs.forEach" in dup_block
+        assert "if (!key) return;" in dup_block
+    finally:
+        await client.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_duplicate_highlight_touches_only_the_documents_table(warehouse_env):
+    """#26: у вкладці «Склад» дублі не підсвічуються."""
+    client, db, html = await _documents_page(warehouse_env)
+    try:
+        render_items = html.split("function renderItems(items)")[1].split("tbody.innerHTML = html;")[0]
+        assert "doc-dup" not in render_items
+
+        render_docs = html.split("function renderDocs(docs)")[1].split("tbody.innerHTML = html;")[0]
+        assert "doc-dup" in render_docs
+
+        # стиль підсвітки оголошено один раз — фіолетовим, як badge-emb
+        assert html.count(".doc-dup {") == 1
+        assert ".doc-dup { background: rgba(168,85,247,0.15); color: #d8b4fe; }" in html
+    finally:
+        await client.close()
+        db.close()
+
+
 
