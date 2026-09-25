@@ -820,6 +820,8 @@ async def test_document_inspection_quantity_edit_integration(warehouse_env):
         doc_type="НАКЛАДНА",
         doc_number="НКЛ-200",
         doc_date="29.08.2026",
+        requested_by="начальник служби (ПІБ)",
+        requested_via="7939 - (ПІБ)",
         raw_text="НАКЛАДНА НКЛ-200\nТРУБА ПВХ 32мм - 50 м",
     )
     item_id = db.add_item(name="Труба ПВХ 32мм", sku="PIPE-32", unit="м")
@@ -1336,6 +1338,74 @@ async def test_nested_tables_have_card_mode_markup(warehouse_env):
         # дати, кількості й номери накладних не рвуться посеред значення
         for label in ("Дата", "Кількість", "№ накл."):
             assert f'.card-table > tbody > tr > td[data-label="{label}"]' in html, label
+    finally:
+        await client.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_api_document_ocr_returns_all_recognition_fields(warehouse_env):
+    """#27: серверна частина картки віддає всі пʼять полів розпізнавання, порожні — порожніми рядками."""
+    db, fs, vs = warehouse_env
+    partial_id = db.add_document(
+        filename="vymoha.jpg",
+        file_type="photo",
+        doc_type="ВИМОГА",
+        doc_number="0000215",
+        doc_date="15.08.2026",
+        requested_via="7939 - (ПІБ)",
+        raw_text="ВИМОГА № 0000215",
+    )
+    empty_id = db.add_document(filename="scan.jpg", file_type="photo")
+
+    server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
+    client = TestClient(TestServer(server._app))
+    await client.start_server()
+
+    fields = ("doc_type", "doc_number", "doc_date", "requested_by", "requested_via")
+    try:
+        data = await (await client.get(f"/api/warehouse/documents/{partial_id}/ocr")).json()
+        for key in fields:
+            assert key in data, key
+            assert isinstance(data[key], str), key
+        assert data["requested_via"] == "7939 - (ПІБ)"
+        # OCR прочитав «ЗАТРЕБУВАВ» як «ЧЕРЕЗ КОГО», тож поле лишається порожнім — але присутнім
+        assert data["requested_by"] == ""
+
+        # документ без жодного розпізнаного поля: ключі є, значення порожні
+        empty = await (await client.get(f"/api/warehouse/documents/{empty_id}/ocr")).json()
+        for key in fields:
+            assert empty[key] == "", key
+    finally:
+        await client.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_document_card_renders_all_recognition_fields(warehouse_env):
+    """#27: розгорнута картка будує блок кожного з пʼяти полів — значенням або прочерком."""
+    db, fs, vs = warehouse_env
+    server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
+    client = TestClient(TestServer(server._app))
+    await client.start_server()
+
+    try:
+        html = await (await client.get("/")).text()
+        card = html.split("async function reloadDocImpact", 1)[1].split("async function toggleDocImpact", 1)[0]
+
+        # жодне з пʼяти полів не рендериться умовно
+        for guard in ("if (data.doc_type)", "if (data.doc_number)", "if (data.doc_date)",
+                      "if (data.requested_by)", "if (data.requested_via)"):
+            assert guard not in card, guard
+
+        # усі пʼять полів малюються завжди: заповнене — значенням, порожнє — прочерком
+        for label in ("Тип", "№", "Дата", "Затребував", "Через кого"):
+            assert f"metaField('{label}'" in card, label
+        assert "metaDash" in card
+
+        # у Excel-документа й системного документа розділу розпізнаних полів немає, як і раніше
+        excel_branch = card.split("// Excel / other non-photo documents", 1)[1]
+        assert "metaField(" not in excel_branch
     finally:
         await client.close()
         db.close()

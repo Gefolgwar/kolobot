@@ -1244,26 +1244,22 @@ async function reloadDocImpact(docId) {
             // Right: OCR Text and Metadata Card
             h += '<div class="lg:col-span-8 space-y-3">';
 
-            // Meta bar
+            // Meta bar — усі пʼять полів розпізнавання рендеряться завжди: значення або прочерк.
+            const metaField = (label, valueHtml) => '<span class="text-xs text-slate-300"><span class="text-slate-500">' + label + ':</span> ' + valueHtml + '</span>';
+            const metaDash = '<span class="text-slate-600">—</span>';
             h += '<div class="glass rounded-xl p-3 border border-slate-800 flex flex-wrap items-center justify-between gap-2 bg-slate-900/60">';
             h += '<div class="flex items-center gap-3">';
-            if (data.doc_type) {
-                const dt = data.doc_type.toUpperCase();
+            const dt = (data.doc_type || '').toUpperCase();
+            if (dt) {
                 const badge = dt === 'НАКЛАДНА' ? 'badge-nakladna' : (dt === 'ВИМОГА' ? 'badge-vymoha' : 'badge-import');
-                h += '<span class="px-2.5 py-0.5 rounded-full text-xs font-semibold ' + badge + '">' + esc(dt) + '</span>';
+                h += metaField('Тип', '<span class="px-2.5 py-0.5 rounded-full text-xs font-semibold ' + badge + '">' + esc(dt) + '</span>');
+            } else {
+                h += metaField('Тип', metaDash);
             }
-            if (data.doc_number) {
-                h += '<span class="text-xs text-slate-300"><span class="text-slate-500">№:</span> <span class="font-mono font-bold text-slate-200">' + esc(data.doc_number) + '</span></span>';
-            }
-            if (data.doc_date) {
-                h += '<span class="text-xs text-slate-300"><span class="text-slate-500">Дата:</span> ' + esc(data.doc_date) + '</span>';
-            }
-            if (data.requested_by) {
-                h += '<span class="text-xs text-slate-300"><span class="text-slate-500">Затребував:</span> <span class="text-amber-200">' + esc(data.requested_by) + '</span></span>';
-            }
-            if (data.requested_via) {
-                h += '<span class="text-xs text-slate-300"><span class="text-slate-500">Через кого:</span> <span class="text-amber-200">' + esc(data.requested_via) + '</span></span>';
-            }
+            h += metaField('№', data.doc_number ? '<span class="font-mono font-bold text-slate-200">' + esc(data.doc_number) + '</span>' : metaDash);
+            h += metaField('Дата', data.doc_date ? esc(data.doc_date) : metaDash);
+            h += metaField('Затребував', data.requested_by ? '<span class="text-amber-200">' + esc(data.requested_by) + '</span>' : metaDash);
+            h += metaField('Через кого', data.requested_via ? '<span class="text-amber-200">' + esc(data.requested_via) + '</span>' : metaDash);
             h += '</div>';
             if (rawText) {
                 h += '<button onclick="copyTextDirect(\'ocr-acc-text-' + docId + '\', this)" class="px-2.5 py-1 text-xs text-slate-400 hover:text-slate-200 bg-slate-800 hover:bg-slate-700 rounded-lg transition flex items-center gap-1"><i class="fa-solid fa-copy"></i><span>Копіювати текст</span></button>';
@@ -2296,11 +2292,12 @@ class WebServer:
             "id": doc["id"],
             "filename": doc["filename"],
             "file_type": doc["file_type"],
-            "doc_type": doc.get("doc_type", ""),
-            "doc_number": doc.get("doc_number", ""),
-            "doc_date": doc.get("doc_date", ""),
-            "requested_by": doc.get("requested_by", ""),
-            "requested_via": doc.get("requested_via", ""),
+            # Усі пʼять полів розпізнавання присутні завжди: порожнє — порожній рядок, а не пропущений ключ.
+            "doc_type": doc.get("doc_type") or "",
+            "doc_number": doc.get("doc_number") or "",
+            "doc_date": doc.get("doc_date") or "",
+            "requested_by": doc.get("requested_by") or "",
+            "requested_via": doc.get("requested_via") or "",
             "raw_text": raw_text,
             "impact": impact,
             "status": doc.get("status", "completed"),
