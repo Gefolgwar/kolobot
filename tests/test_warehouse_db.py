@@ -732,6 +732,30 @@ def test_incomplete_document_is_not_counted_and_item_falls_out_of_doc_count(ware
     assert item["balance"] == 30.0
 
 
+def test_missing_fields_agrees_with_the_accounting_sql_rule(warehouse_db):
+    """Ознака «не в обліку» одна: порожній missing_fields ⟺ документ ураховано в SQL.
+
+    На неї спирається мітка у вкладці «Документи» (#29), тож розходження
+    між переліком полів і правилом обліку було б тихою помилкою в UI.
+    """
+    item_id = warehouse_db.add_item(name="Гайка М8", sku="NUT-08", unit="шт")
+    complete_id = _add_complete_photo_doc(warehouse_db)
+    incomplete_id = _add_incomplete_photo_doc(warehouse_db)
+    excel_id = warehouse_db.add_document(filename="import.xlsx", file_type="excel")
+    manual_id = warehouse_db.get_or_create_manual_document()
+
+    for doc_id in (complete_id, incomplete_id, excel_id, manual_id):
+        warehouse_db.add_transaction(
+            item_id=item_id, document_id=doc_id, operation_type="income", quantity=1.0
+        )
+
+    docs = {d["id"]: d for d in warehouse_db.get_documents()}
+    accounted_sql = {tx["document_id"]: tx["accounted"] for tx in warehouse_db.get_item_transactions(item_id)}
+
+    for doc_id in (complete_id, incomplete_id, excel_id, manual_id):
+        assert accounted_sql[doc_id] is (docs[doc_id]["missing_fields"] == []), doc_id
+
+
 def test_last_doc_date_and_number_skip_unaccounted_transactions(warehouse_db):
     """Остання дата й номер позиції беруться лише з урахованих транзакцій."""
     item_id = warehouse_db.add_item(name="Лампа LED", sku="LED-01", unit="шт")

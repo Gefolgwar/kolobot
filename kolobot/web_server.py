@@ -15,7 +15,7 @@ from aiohttp import web
 from kolobot.file_store import FileStore
 from kolobot.log_service import LogBuffer, LogEntry, get_global_log_buffer, setup_logging_capture
 from kolobot.vector_store import VectorStore
-from kolobot.warehouse_db import WarehouseDB
+from kolobot.warehouse_db import WarehouseDB, missing_doc_fields
 
 logger = logging.getLogger(__name__)
 
@@ -248,12 +248,21 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
     <!-- Documents Tab -->
     <main id="panel-documents" class="max-w-7xl mx-auto px-6 hidden">
+        <div class="glass rounded-2xl p-4 mb-6">
+            <div class="flex items-center gap-2 flex-wrap">
+                <span class="text-xs text-slate-500 mr-0.5"><i class="fa-solid fa-filter"></i></span>
+                <button onclick="setDocFilter('not-accounted')" id="filter-not-accounted" class="px-2.5 py-1 text-xs font-medium rounded-lg border border-slate-700/60 text-slate-400 bg-slate-900/50 hover:bg-slate-800/80 transition flex items-center gap-1.5">
+                    <i class="fa-solid fa-triangle-exclamation text-amber-400"></i> Не в обліку
+                    <span id="filter-not-accounted-count" class="px-1.5 py-0.5 bg-slate-800 rounded text-[10px] min-w-[20px] text-center">0</span>
+                </button>
+            </div>
+        </div>
         <div class="glass rounded-2xl border border-slate-800 overflow-hidden shadow-2xl">
             <div class="overflow-x-auto">
                 <table class="w-full text-left border-collapse compact-table card-table">
                     <thead>
                         <tr class="bg-slate-900/90 text-slate-400 text-xs font-semibold uppercase border-b border-slate-800">
-                            <th class="py-4 px-3 w-8"></th>
+                            <th class="py-4 px-3 w-14"></th>
                             <th class="py-4 px-3">Превʼю</th>
                             <th id="doc-sort-filename" onclick="toggleDocSort('filename')" class="py-4 px-3 cursor-pointer select-none hover:text-slate-200 transition">Файл <i id="doc-sort-icon-filename" class="fa-solid fa-sort text-slate-600"></i></th>
                             <th id="doc-sort-file_type" onclick="toggleDocSort('file_type')" class="py-4 px-3 cursor-pointer select-none hover:text-slate-200 transition">Тип <i id="doc-sort-icon-file_type" class="fa-solid fa-sort text-slate-600"></i></th>
@@ -1238,7 +1247,7 @@ async function fetchDocs() {
         const res = await fetch('/api/warehouse/documents');
         allDocs = await res.json();
         document.getElementById('docs-count').innerText = allDocs.length;
-        renderDocs(allDocs);
+        filterDocs();
         checkSmartPolling();
     } catch(e) {
         console.error(e);
@@ -1372,6 +1381,49 @@ function docNumberTwinCounts() {
 }
 // ---- Кінець підсвічування дублів (#26) ----
 
+// ---- Мітка «Не в обліку» та її фільтр (#29) ----
+// Перелік не розпізнаних полів приходить із бекенду (missing_fields) — його рахує
+// та сама missing_doc_fields(), що й SQL-правило обліку. Фронтенд його не повторює,
+// тож excel і ручний системний документ мітки не отримують.
+// Стан фільтра живе поряд зі станом сортування і застосовується при кожному рендері,
+// тож переживає автооновлення. Порядок як у батьківській задачі: спершу фільтр, потім сортування.
+let docFilter = '';
+
+function isDocUnaccounted(doc) {
+    return (doc.missing_fields || []).length > 0;
+}
+
+function setDocFilter(filter) {
+    docFilter = (docFilter === filter) ? '' : filter;
+    updateDocFilterUI();
+    filterDocs();
+}
+
+function updateDocFilterUI() {
+    const btn = document.getElementById('filter-not-accounted');
+    if (!btn) return;
+    if (docFilter === 'not-accounted') {
+        btn.classList.add('bg-blue-600/30', 'text-blue-300', 'border-blue-500/50');
+        btn.classList.remove('text-slate-400', 'border-slate-700/60', 'bg-slate-900/50');
+    } else {
+        btn.classList.remove('bg-blue-600/30', 'text-blue-300', 'border-blue-500/50');
+        btn.classList.add('text-slate-400', 'border-slate-700/60', 'bg-slate-900/50');
+    }
+}
+
+function updateDocFilterCounts() {
+    const el = document.getElementById('filter-not-accounted-count');
+    if (!el) return;
+    el.textContent = allDocs.filter(isDocUnaccounted).length;
+}
+
+// Фільтр іде по всьому завантаженому списку, а сортування — вже по його результату.
+function filterDocs() {
+    updateDocFilterCounts();
+    renderDocs(docFilter === 'not-accounted' ? allDocs.filter(isDocUnaccounted) : allDocs);
+}
+// ---- Кінець фільтра «Не в обліку» (#29) ----
+
 function renderDocs(docs) {
     lastRenderedDocs = docs;
     const sorted = applyDocSort(docs);
@@ -1395,6 +1447,11 @@ function renderDocs(docs) {
         const docNumberCls = twinCount ? 'doc-dup' : 'text-slate-300';
         const docNumberTwin = twinCount
             ? `<span class="text-purple-300 ml-1" title="Такий самий номер ще в ${twinCount} документах"><i class="fa-solid fa-clone"></i></span>`
+            : '';
+        // Мітка «не в обліку»: перелік не розпізнаних полів дає бекенд, клітинка лише показує його
+        const missingFields = doc.missing_fields || [];
+        const unaccountedMark = missingFields.length
+            ? `<span class="text-amber-400 ml-1 align-middle" title="Документ не в обліку. Не розпізнано: ${esc(missingFields.join(', '))}"><i class="fa-solid fa-triangle-exclamation"></i></span>`
             : '';
         let docTypeBadge = '';
         if (docType === 'НАКЛАДНА') {
@@ -1430,7 +1487,7 @@ function renderDocs(docs) {
 
         html += `
         <tr class="hover:bg-slate-800/40 transition cursor-pointer" onclick="toggleDocImpact(${doc.id})">
-            <td class="py-4 px-3"><i id="doc-chevron-${doc.id}" class="fa-solid fa-chevron-right text-[10px] text-slate-500 transition-transform"></i></td>
+            <td class="py-4 px-3 whitespace-nowrap"><i id="doc-chevron-${doc.id}" class="fa-solid fa-chevron-right text-[10px] text-slate-500 transition-transform"></i>${unaccountedMark}</td>
             <td class="py-4 px-3" data-label="Превʼю">${previewBtn}</td>
             <td class="py-4 px-3 font-medium text-slate-200 break-words" data-label="Файл">${esc(doc.filename)}${manualEditMark(doc.manual_edited)}</td>
             <td class="py-4 px-3" data-label="Тип"><span class="px-2 py-0.5 rounded-full text-[11px] font-medium badge-import">${typeLabel}</span></td>
@@ -1479,6 +1536,15 @@ async function reloadDocImpact(docId) {
         const impacts = data.impact || [];
 
         let h = '<div class="space-y-4">';
+
+        // Попередження про неповне розпізнавання (#29): той самий перелік, що й у мітці рядка.
+        const missingFields = data.missing_fields || [];
+        if (missingFields.length) {
+            h += '<div class="rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200 flex items-start gap-2">';
+            h += '<i class="fa-solid fa-triangle-exclamation text-amber-400 mt-0.5"></i>';
+            h += '<span>Документ не в обліку. Не розпізнано: ' + esc(missingFields.join(', ')) + '</span>';
+            h += '</div>';
+        }
 
         if (isPhoto) {
             h += '<div class="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">';
@@ -2606,6 +2672,8 @@ class WebServer:
             "doc_date": doc.get("doc_date") or "",
             "requested_by": doc.get("requested_by") or "",
             "requested_via": doc.get("requested_via") or "",
+            # Той самий перелік, що й у таблиці: рахує спільний помічник, не фронтенд.
+            "missing_fields": missing_doc_fields(doc),
             "raw_text": raw_text,
             "impact": impact,
             "status": doc.get("status", "completed"),

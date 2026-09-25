@@ -13,7 +13,7 @@ from unittest.mock import MagicMock
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
-from kolobot.warehouse_db import WarehouseDB
+from kolobot.warehouse_db import REQUIRED_DOC_FIELDS, WarehouseDB
 from kolobot.web_server import WebServer
 
 
@@ -1243,7 +1243,8 @@ async def test_documents_table_has_card_mode_markup(warehouse_env):
         assert render_docs.count(' data-label="') == 11
 
         # шеврон і повноширинні клітинки розгорнутих блоків підпису не отримують
-        assert '<td class="py-4 px-3"><i id="doc-chevron-' in html
+        # (у клітинці шеврона живе ще й мітка «не в обліку» — #29)
+        assert '<td class="py-4 px-3 whitespace-nowrap"><i id="doc-chevron-' in html
         assert '<td colspan="12" class="p-0">' in html  # рядок деталей — без data-label
 
         # перемикання таблиця/картки робить виключно CSS, без JS-розгалужень за шириною.
@@ -1523,7 +1524,8 @@ async def test_documents_headers_are_clickable_and_sortable(warehouse_env):
         assert head.count("toggleDocSort(") == 9
 
         # колонки без змістовного значення лишились неклікабельними
-        assert '<th class="py-4 px-3 w-8"></th>' in head
+        # (колонку розгортання розширено під мітку «не в обліку» — #29)
+        assert '<th class="py-4 px-3 w-14"></th>' in head
         assert '<th class="py-4 px-3">Превʼю</th>' in head
         assert '<th class="py-4 px-3 text-right">Дії</th>' in head
     finally:
@@ -2432,6 +2434,370 @@ async def test_duplicate_highlight_touches_only_the_documents_table(warehouse_en
         # стиль підсвітки оголошено один раз — фіолетовим, як badge-emb
         assert html.count(".doc-dup {") == 1
         assert ".doc-dup { background: rgba(168,85,247,0.15); color: #d8b4fe; }" in html
+    finally:
+        await client.close()
+        db.close()
+
+
+# ---- Слайс #29: мітка «не в обліку» та її фільтр у вкладці «Документи» ----
+
+DOC_UNACCOUNTED_BLOCK_START = "// ---- Мітка «Не в обліку» та її фільтр (#29) ----"
+DOC_UNACCOUNTED_BLOCK_END = "// ---- Кінець фільтра «Не в обліку» (#29) ----"
+
+# Назви обовʼязкових полів беруться з єдиного джерела — REQUIRED_DOC_FIELDS.
+# Фронтенд їх не перелічує: готовий перелік приходить у missing_fields.
+DOC_REQUIRED_LABELS = tuple(label for label, _ in REQUIRED_DOC_FIELDS)
+
+# Оточення браузера для всієї сторінки: /documents — список, /documents/<id>/ocr — картка.
+_DOC_UNACCOUNTED_STUBS = """
+const fs = require('fs');
+const payload = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+
+const els = {};
+function el(id) {
+    if (!els[id]) {
+        const classes = new Set();
+        els[id] = {
+            id: id, innerHTML: '', textContent: '', innerText: '', value: '', type: '', style: {},
+            classList: {
+                add: c => classes.add(c),
+                remove: c => classes.delete(c),
+                contains: c => classes.has(c)
+            },
+            addEventListener() {}
+        };
+    }
+    return els[id];
+}
+globalThis.document = { getElementById: el, querySelectorAll: () => [], addEventListener() {} };
+globalThis.window = { addEventListener() {} };
+globalThis.setTimeout = () => 0;
+globalThis.clearTimeout = () => {};
+globalThis.alert = () => {};
+
+globalThis.fetch = async url => {
+    const m = String(url).match(/\\/documents\\/(\\d+)\\/ocr/);
+    const body = m ? (payload.cards[m[1]] || {}) : payload.docs;
+    return { ok: true, status: 200, json: async () => body };
+};
+"""
+
+_DOC_UNACCOUNTED_DRIVER = """
+(async () => {
+    const body = () => els['docs-tbody'].innerHTML;
+
+    const shownIds = () => {
+        const out = [];
+        const re = /doc-chevron-(\\d+)/g;
+        let m;
+        while ((m = re.exec(body()))) out.push(Number(m[1]));
+        return out;
+    };
+
+    // Вміст першої колонки рядка: усе після шеврона розгортання і до кінця клітинки.
+    const marks = () => {
+        const out = {};
+        body().split('<tr ').forEach(chunk => {
+            const at = chunk.indexOf('doc-chevron-');
+            if (at === -1) return;
+            const id = Number(chunk.substring(at + 'doc-chevron-'.length).split('"')[0]);
+            out[id] = chunk.substring(chunk.indexOf('</i>') + 4).split('</td>')[0];
+        });
+        return out;
+    };
+
+    const state = () => ({
+        ids: shownIds(), marks: marks(),
+        count: el('filter-not-accounted-count').textContent,
+        active: el('filter-not-accounted').classList.contains('bg-blue-600/30')
+    });
+
+    allDocs = payload.docs;
+    docSort = payload.sort || { key: null, dir: null };
+    await fetchDocs();                              // автооновлення малює список
+    const initial = state();
+    initial.markup = body();
+
+    setDocFilter('not-accounted');
+    const filtered = state();
+
+    await fetchDocs();                              // автооновлення не скидає фільтр
+    const refreshed = state();
+
+    toggleDocSort('filename');                      // сортування — вже по відфільтрованому
+    const sorted = state();
+
+    setDocFilter('not-accounted');                  // повторний клік знімає фільтр
+    const cleared = state();
+
+    const cards = {};
+    for (const id of payload.cardDocIds) {
+        await reloadDocImpact(id);
+        cards[id] = els['doc-impact-content-' + id].innerHTML;
+    }
+
+    console.log(JSON.stringify({initial, filtered, refreshed, sorted, cleared, cards}));
+})();
+"""
+
+
+def _run_doc_unaccounted(html, payload):
+    """Проганяє сторінку в node: мітку рядка, фільтр і картку розгортання."""
+    page = html.split("<script>", 1)[1].split("</script>", 1)[0]
+    with tempfile.TemporaryDirectory() as tmp:
+        script = os.path.join(tmp, "doc_unaccounted.js")
+        payload_path = os.path.join(tmp, "payload.json")
+        with open(script, "w", encoding="utf-8") as fh:
+            fh.write(_DOC_UNACCOUNTED_STUBS + page + _DOC_UNACCOUNTED_DRIVER)
+        with open(payload_path, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh)
+        proc = subprocess.run([NODE, script, payload_path],
+                              capture_output=True, text=True, encoding="utf-8")
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout)
+
+
+def _row_of(markup, doc_id):
+    """Розмітка одного рядка таблиці документів."""
+    for chunk in markup.split("<tr ")[1:]:
+        if f'doc-chevron-{doc_id}"' in chunk:
+            return chunk
+    raise AssertionError(f"рядок документа {doc_id} не знайдено")
+
+
+def _first_cell_of(markup, doc_id):
+    """Перша клітинка рядка документа — та, у якій стоїть шеврон і мітка «не в обліку»."""
+    return _row_of(markup, doc_id).split("</td>", 1)[0]
+
+
+def _mark_tooltip(markup, doc_id):
+    """Текст підказки мітки «не в обліку» — те, що побачить користувач при наведенні."""
+    return _row_of(markup, doc_id).split('title="', 1)[1].split('"', 1)[0]
+
+
+def _unaccounted_doc(doc_id, filename, missing, file_type="pdf"):
+    return {"id": doc_id, "filename": filename, "file_type": file_type,
+            "doc_type": "НАКЛАДНА", "status": "completed", "uploaded_at": doc_id,
+            "doc_number": f"№ {doc_id}", "requested_by": "", "requested_via": "",
+            "transaction_count": doc_id, "missing_fields": list(missing)}
+
+
+# Типовий (SQL) порядок — [1, 2, 3, 8, 9]: саме він приходить зі списку документів.
+DOC_UNACCOUNTED_DOCS = [
+    # повністю розпізнаний — мітки немає
+    _unaccounted_doc(1, "а.pdf", []),
+    # бракує двох полів — саме вони й мають бути в підказці; імʼя «я.pdf»
+    # ставить його після «б.pdf» при сортуванні за файлом
+    _unaccounted_doc(2, "я.pdf", ["№ документа", "Дата документа"]),
+    # бракує всіх пʼяти
+    _unaccounted_doc(3, "б.pdf", [label for label, _ in REQUIRED_DOC_FIELDS]),
+    # excel і системний ручний документ під правило обліку не підпадають
+    _unaccounted_doc(8, "г.xlsx", [], file_type="excel"),
+    _unaccounted_doc(9, "Ручне редагування (Користувач)", [], file_type="manual"),
+]
+
+DOC_UNACCOUNTED_CARDS = {
+    "2": {"id": 2, "filename": "я.pdf", "file_type": "photo", "doc_type": "НАКЛАДНА",
+          "doc_number": "", "doc_date": "", "requested_by": "Іваненко", "requested_via": "",
+          "raw_text": "текст", "impact": [], "status": "completed", "error_message": "",
+          "missing_fields": ["№ документа", "Дата документа"]},
+    "9": {"id": 9, "filename": "Ручне редагування (Користувач)", "file_type": "manual",
+          "doc_type": "РУЧНЕ_КОРИГУВАННЯ", "doc_number": "", "doc_date": "",
+          "requested_by": "", "requested_via": "", "raw_text": "системний документ",
+          "impact": [], "status": "completed", "error_message": "", "missing_fields": []},
+}
+
+DOC_UNACCOUNTED_WARNING = "Документ не в обліку. Не розпізнано: "
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(NODE is None, reason="node недоступний — JS сторінки не виконати")
+async def test_unaccounted_document_gets_a_triangle_with_its_missing_fields(warehouse_env):
+    """#29: жовтий трикутник у першій колонці, підказка перелічує саме не розпізнані поля."""
+    client, db, html = await _documents_page(warehouse_env)
+    try:
+        result = _run_doc_unaccounted(html, {"docs": DOC_UNACCOUNTED_DOCS, "cards": {},
+                                             "cardDocIds": []})
+        markup = result["initial"]["markup"]
+
+        # трикутник стоїть у першій колонці рядка — перед превʼю, файлом і рештою
+        row = _row_of(markup, 2)
+        assert "fa-triangle-exclamation" in _first_cell_of(markup, 2)
+        assert "text-amber-400" in _first_cell_of(markup, 2)
+        assert row.index("fa-triangle-exclamation") < row.index('data-label="Превʼю"')
+
+        # підказка перелічує рівно ті поля, яких бракує, у порядку REQUIRED_DOC_FIELDS
+        assert _mark_tooltip(markup, 2) == DOC_UNACCOUNTED_WARNING + "№ документа, Дата документа"
+        assert _mark_tooltip(markup, 3) == DOC_UNACCOUNTED_WARNING + ", ".join(DOC_REQUIRED_LABELS)
+
+        # повністю розпізнаний документ мітки не має
+        assert "fa-triangle-exclamation" not in _first_cell_of(markup, 1)
+        assert result["initial"]["marks"]["1"] == ""
+
+        # excel і системний ручний документ під правило не підпадають
+        for doc_id in (8, 9):
+            assert "fa-triangle-exclamation" not in _first_cell_of(markup, doc_id), doc_id
+            assert result["initial"]["marks"][str(doc_id)] == "", doc_id
+    finally:
+        await client.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(NODE is None, reason="node недоступний — JS сторінки не виконати")
+async def test_unaccounted_mark_ignores_sorting_and_counts_the_whole_list(warehouse_env):
+    """#29: мітка не залежить від сортування, а лічильник рахує весь завантажений список."""
+    client, db, html = await _documents_page(warehouse_env)
+    try:
+        payload = {"docs": DOC_UNACCOUNTED_DOCS, "cards": {}, "cardDocIds": []}
+        result = _run_doc_unaccounted(html, payload)
+        default_marks = result["initial"]["marks"]
+
+        # лічильник показує всі необліковані документи — двох
+        assert str(result["initial"]["count"]) == "2"
+
+        # порядок рядків змінюється, мітки лишаються ті самі
+        result = _run_doc_unaccounted(html, {**payload, "sort": {"key": "filename", "dir": "asc"}})
+        assert result["initial"]["ids"] != [1, 2, 3, 8, 9]
+        assert result["initial"]["marks"] == default_marks
+        assert str(result["initial"]["count"]) == "2"
+    finally:
+        await client.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(NODE is None, reason="node недоступний — JS сторінки не виконати")
+async def test_unaccounted_filter_hides_accounted_rows_and_composes_with_sorting(warehouse_env):
+    """#29: фільтр лишає тільки необліковані, переживає автооновлення, а сортує вже його результат."""
+    client, db, html = await _documents_page(warehouse_env)
+    try:
+        result = _run_doc_unaccounted(html, {"docs": DOC_UNACCOUNTED_DOCS, "cards": {},
+                                             "cardDocIds": []})
+
+        assert result["initial"]["ids"] == [1, 2, 3, 8, 9]
+        assert result["initial"]["active"] is False
+
+        # увімкнений фільтр лишає тільки документи з не розпізнаними полями
+        assert result["filtered"]["ids"] == [2, 3]
+        assert result["filtered"]["active"] is True
+        # лічильник і далі рахує весь список, а не показані рядки
+        assert str(result["filtered"]["count"]) == "2"
+
+        # автооновлення не скидає ні фільтр, ні його результат
+        assert result["refreshed"]["ids"] == [2, 3]
+        assert result["refreshed"]["active"] is True
+
+        # сортування застосовується вже до відфільтрованого списку: «б.pdf» перед «я.pdf»
+        assert result["sorted"]["ids"] == [3, 2]
+
+        # повторний клік знімає фільтр — весь список повертається
+        assert sorted(result["cleared"]["ids"]) == [1, 2, 3, 8, 9]
+        assert result["cleared"]["active"] is False
+    finally:
+        await client.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(NODE is None, reason="node недоступний — JS сторінки не виконати")
+async def test_expanded_card_repeats_the_warning_with_the_same_missing_fields(warehouse_env):
+    """#29: у розгорнутій картці — той самий перелік, що й у підказці мітки."""
+    client, db, html = await _documents_page(warehouse_env)
+    try:
+        cards = _run_doc_unaccounted(html, {"docs": DOC_UNACCOUNTED_DOCS,
+                                            "cards": DOC_UNACCOUNTED_CARDS,
+                                            "cardDocIds": [2, 9]})["cards"]
+
+        assert DOC_UNACCOUNTED_WARNING + "№ документа, Дата документа" in cards["2"]
+        assert "fa-triangle-exclamation" in cards["2"]
+
+        # системний документ ручних коригувань попередження не отримує
+        assert DOC_UNACCOUNTED_WARNING not in cards["9"]
+    finally:
+        await client.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_unaccounted_filter_button_follows_the_warehouse_filter_pattern(warehouse_env):
+    """#29: кнопка фільтра — та сама розмітка й той самий стан, що й у вкладці «Склад»."""
+    client, db, html = await _documents_page(warehouse_env)
+    try:
+        assert "let docFilter = '';" in html
+        assert "function setDocFilter(filter)" in html
+        assert "function updateDocFilterUI()" in html
+        assert "function filterDocs()" in html
+
+        # кнопка з лічильником — у рядку фільтрів вкладки «Документи», за зразком «Складу»
+        documents_panel = html.split('id="panel-documents"')[1].split("</main>")[0]
+        assert 'onclick="setDocFilter(\'not-accounted\')"' in documents_panel
+        assert 'id="filter-not-accounted"' in documents_panel
+        assert 'id="filter-not-accounted-count"' in documents_panel
+        assert "fa-triangle-exclamation text-amber-400" in documents_panel
+        assert "bg-blue-600/30" in html.split("function updateDocFilterUI()")[1]
+
+        # фільтр застосовується при кожному рендері — саме так його бачить автооновлення
+        fetch_docs = html.split("async function fetchDocs()")[1].split("checkSmartPolling();")[0]
+        assert "filterDocs();" in fetch_docs
+        assert "renderDocs(allDocs);" not in fetch_docs
+
+        # фільтри «Складу» не змінені
+        assert "['below-min', 'negative', 'no-docs', 'dup-names', 'zeros']" in html
+    finally:
+        await client.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_unaccounted_rule_is_not_duplicated_in_the_frontend(warehouse_env):
+    """#29: перелік полів рахує бекенд — фронтенд лише показує готовий missing_fields."""
+    client, db, html = await _documents_page(warehouse_env)
+    try:
+        block = html.split(DOC_UNACCOUNTED_BLOCK_START, 1)[1].split(DOC_UNACCOUNTED_BLOCK_END, 1)[0]
+        assert "doc.missing_fields" in block
+        assert "allDocs.filter(isDocUnaccounted)" in block
+
+        # жодної другої копії переліку обовʼязкових полів
+        for label in DOC_REQUIRED_LABELS:
+            assert label not in block, label
+
+        # мітка рядка й попередження в картці теж беруть готовий перелік
+        render_docs = html.split("function renderDocs(docs)")[1].split("tbody.innerHTML = html;")[0]
+        assert "const missingFields = doc.missing_fields || [];" in render_docs
+        card = html.split("async function reloadDocImpact(docId)")[1].split("// OCR Text Box")[0]
+        assert "const missingFields = data.missing_fields || [];" in card
+        assert "Документ не в обліку. Не розпізнано: " in card
+    finally:
+        await client.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_document_ocr_endpoint_exposes_the_missing_fields_from_the_shared_helper(warehouse_env):
+    """#29: картка розгортання отримує перелік із бекенду, а не рахує його сама."""
+    db, fs, vs = warehouse_env
+    server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
+    client = TestClient(TestServer(server._app))
+    await client.start_server()
+    try:
+        photo_id = db.add_document(filename="scan.jpg", file_type="photo", doc_type="НАКЛАДНА",
+                                   doc_number="123", requested_by="Іваненко")
+        excel_id = db.add_document(filename="import.xlsx", file_type="excel")
+        manual_id = db.get_or_create_manual_document()
+
+        photo = await (await client.get(f"/api/warehouse/documents/{photo_id}/ocr")).json()
+        assert photo["missing_fields"] == ["Дата документа", "Через кого"]
+
+        excel = await (await client.get(f"/api/warehouse/documents/{excel_id}/ocr")).json()
+        assert excel["missing_fields"] == []
+
+        manual = await (await client.get(f"/api/warehouse/documents/{manual_id}/ocr")).json()
+        assert manual["missing_fields"] == []
+
+        # той самий перелік, що й у таблиці документів
+        docs = {d["id"]: d for d in db.get_documents()}
+        assert docs[photo_id]["missing_fields"] == photo["missing_fields"]
     finally:
         await client.close()
         db.close()
