@@ -7,20 +7,20 @@ import logging
 import os
 import sys
 import uuid
-from typing import Any
-
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.filters import Command
-from aiogram.types import CallbackQuery, ErrorEvent, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import CallbackQuery, ErrorEvent, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
+# Re-exported for callers that still import them from kolobot.main.
+from kolobot.archive_delivery import send_archive_file
 from kolobot.archive_service import ArchiveService
 # Re-exported for callers that still import them from kolobot.main.
 from kolobot.card_view import format_card_text, h, make_card_keyboard
 from kolobot.config import ConfigError, load_config
 from kolobot.doc_structurer import DocStructurer
-from kolobot.file_store import FileStore, _ext_from_mime
+from kolobot.file_store import FileStore
 from kolobot.gemini_gateway import GeminiError, GeminiGateway
 from kolobot.handlers.commands import cmd_clear, cmd_status, router as commands_router
 from kolobot.handlers.list_delete import ListDeleteHandler
@@ -31,91 +31,14 @@ from kolobot.log_service import setup_logging_capture
 from kolobot.middlewares.access import AccessMiddleware
 from kolobot.queue_service import DocumentQueueService, PendingCard, QueueItem
 from kolobot.rag_service import RagService
+# Re-exported for callers that still import them from kolobot.main.
+from kolobot.startup import _sync_chroma_with_warehouse
 from kolobot.vector_store import VectorStore
 from kolobot.warehouse_db import WarehouseDB
 # Re-exported for callers that still import them from kolobot.main.
 from kolobot.warehouse_writer import _detect_doc_type_and_op, _save_to_warehouse
 
 logger = logging.getLogger(__name__)
-
-
-async def send_archive_file(
-    message: Message,
-    file_store: FileStore,
-    doc_id: str,
-    metadata: dict[str, Any],
-    error_text: str = "Не вдалося надіслати файл.",
-) -> bool:
-    """
-    Send an archived document or photo to Telegram.
-    Tries telegram_file_id first (answer_photo for photos, answer_document for documents).
-    Falls back to local storage using FSInputFile if file_id is invalid, expired, or missing.
-    Reports failure only if both methods fail.
-    """
-    fid = metadata.get("telegram_file_id") or ""
-    source = metadata.get("source") or ""
-    mime = metadata.get("mime") or ""
-
-    if fid:
-        try:
-            if source == "photo":
-                await message.answer_photo(fid)
-            else:
-                await message.answer_document(fid)
-            return True
-        except Exception as exc:
-            logger.warning("Failed to send via telegram_file_id=%s: %s", fid, exc)
-
-    ext = _ext_from_mime(mime)
-    file_path = file_store.get_final_path(doc_id, ext)
-    if not file_path:
-        for candidate in (".jpg", ".png", ".webp"):
-            if candidate != ext:
-                file_path = file_store.get_final_path(doc_id, candidate)
-                if file_path:
-                    break
-
-    if file_path:
-        try:
-            input_file = FSInputFile(file_path)
-            if source == "photo":
-                await message.answer_photo(input_file)
-            else:
-                await message.answer_document(input_file)
-            return True
-        except Exception as exc:
-            logger.warning("Failed to send local file %s via FSInputFile: %s", file_path, exc)
-
-    await message.answer(error_text)
-    return False
-
-
-def _sync_chroma_with_warehouse(
-    vs: "VectorStore",
-    wdb: WarehouseDB,
-    fs: FileStore,
-    owner_user_id: int,
-) -> None:
-    chroma_ids = vs.list_all_ids(owner_user_id)
-    if not chroma_ids:
-        return
-
-    wh_docs = wdb.get_documents()
-    known_chroma_ids = set()
-    for doc in wh_docs:
-        fp = doc.get("file_path", "")
-        if fp:
-            stem = os.path.splitext(os.path.basename(fp))[0]
-            if len(stem) == 10:
-                known_chroma_ids.add(stem)
-
-    orphans = [cid for cid in chroma_ids if cid not in known_chroma_ids]
-    for cid in orphans:
-        vs.delete(cid)
-        for ext in (".jpg", ".png", ".webp", ".pdf"):
-            fs.delete_final(cid, ext=ext)
-    if orphans:
-        logger.info("Startup sync: removed %d orphaned ChromaDB records.", len(orphans))
 
 
 def build_app():
