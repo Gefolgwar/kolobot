@@ -398,7 +398,7 @@ async def test_duplicate_check_and_dedup_force_and_open(tmp_path):
 
             with patch("kolobot.vector_store.VectorStore.get") as mock_vs_get:
                 mock_vs_get.return_value = {"metadata": {"telegram_file_id": "old_fid", "source": "photo"}}
-                with patch("kolobot.main.send_archive_file", new_callable=AsyncMock) as mock_send_file:
+                with patch("kolobot.handlers.files.send_archive_file", new_callable=AsyncMock) as mock_send_file:
                     await dp.feed_update(bot, upd_open)
                     mock_send_file.assert_awaited_once()
                     cb_open.message.edit_reply_markup.assert_awaited_with(reply_markup=None)

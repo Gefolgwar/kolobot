@@ -1,42 +1,48 @@
-"""Process entrypoint: load config, wire bot, run polling."""
+"""Process entrypoint: load config, wire bot, run polling.
+
+The composition root and nothing else. Every service is built here and handed
+to the handlers through an ``AppContext``. The handlers live in
+``kolobot/handlers/``, one module per feature, each exposing
+``register(router, ctx)`` and reaching the outside world only through the
+context.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import sys
-import uuid
-from aiogram import Bot, Dispatcher, F, Router
+
+from aiogram import Bot, Dispatcher, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.filters import Command
-from aiogram.types import CallbackQuery, ErrorEvent, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import ErrorEvent
 
-# Re-exported for callers that still import them from kolobot.main.
-from kolobot.archive_delivery import send_archive_file
 from kolobot.archive_service import ArchiveService
-# Re-exported for callers that still import them from kolobot.main.
-from kolobot.card_view import format_card_text, h, make_card_keyboard
 from kolobot.config import ConfigError, load_config
 from kolobot.doc_structurer import DocStructurer
 from kolobot.file_store import FileStore
 from kolobot.gemini_gateway import GeminiError, GeminiGateway
-from kolobot.handlers.commands import cmd_clear, cmd_status, router as commands_router
+from kolobot.handlers import cards, files, manage, query
+from kolobot.handlers.commands import router as commands_router
+from kolobot.handlers.context import AppContext
 from kolobot.handlers.list_delete import ListDeleteHandler
 from kolobot.handlers.media import MediaHandler
 from kolobot.intake_service import DocumentIntakeService
 from kolobot.key_pool import KeyPool, PoolKind
 from kolobot.log_service import setup_logging_capture
 from kolobot.middlewares.access import AccessMiddleware
-from kolobot.queue_service import DocumentQueueService, PendingCard, QueueItem
+from kolobot.queue_service import DocumentQueueService
 from kolobot.rag_service import RagService
-# Re-exported for callers that still import them from kolobot.main.
 from kolobot.startup import _sync_chroma_with_warehouse
 from kolobot.vector_store import VectorStore
 from kolobot.warehouse_db import WarehouseDB
-# Re-exported for callers that still import them from kolobot.main.
-from kolobot.warehouse_writer import _detect_doc_type_and_op, _save_to_warehouse
+
+# Not used here. Kept because the tests import them from kolobot.main; the code
+# itself lives in the module on the right.
+from kolobot.archive_delivery import send_archive_file  # noqa: F401
+from kolobot.card_view import format_card_text, make_card_keyboard  # noqa: F401
+from kolobot.warehouse_writer import _detect_doc_type_and_op, _save_to_warehouse  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -87,481 +93,52 @@ def build_app():
         file_store=file_store,
         owner_user_id=settings.owner_user_id,
     )
+    intake_service = DocumentIntakeService(
+        file_store=file_store,
+        warehouse_db=warehouse_db,
+    )
 
     bot = Bot(
         token=settings.bot_token,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
 
-    async def _on_card_ready(pending_card: PendingCard) -> None:
-        doc = pending_card.doc
-        item = pending_card.item
-
-        # 1. Automatic save to archive / VectorStore (RAG)
-        save_result = await archive_svc.save(
-            title=doc.title,
-            summary=doc.summary,
-            key_value_pairs=doc.key_value_pairs,
-            raw_text=doc.raw_text,
-            tmp_path=item.tmp_path,
-            ext=item.ext,
-            user_id=item.user_id,
-            telegram_file_id=item.file_id,
-            file_unique_id=item.file_unique_id,
-            file_name=item.file_name,
-            mime=item.mime,
-            source=item.source,
-            doc_number=getattr(doc, "doc_number", ""),
-            doc_date=getattr(doc, "doc_date", ""),
-            items=getattr(doc, "items", []),
-            totals=getattr(doc, "totals", {}),
-            item_name=getattr(doc, "item_name", ""),
-            incoming=getattr(doc, "incoming", ""),
-            outgoing=getattr(doc, "outgoing", ""),
-            balance=getattr(doc, "balance", ""),
-            unit=getattr(doc, "unit", ""),
-            supplier=getattr(doc, "supplier", ""),
-            notes=getattr(doc, "notes", ""),
-        )
-
-        # 2. Automatic save to warehouse DB (items, transactions, completed status)
-        warehouse_msg = ""
-        if save_result.success:
-            try:
-                pending_dict = {
-                    "file_name": item.file_name,
-                    "ext": item.ext,
-                    "mime": item.mime,
-                }
-                warehouse_msg = _save_to_warehouse(
-                    warehouse_db,
-                    file_store,
-                    doc,
-                    pending_dict,
-                    save_result.doc_id,
-                    existing_doc_id=item.wh_doc_id,
-                )
-            except Exception as exc:
-                logger.warning("Warehouse save failed: %s", exc)
-                warehouse_msg = "⚠️ Помилка збереження в складську таблицю."
-
-        # Remove card from pending since it's auto-saved
-        queue_service.remove_card(pending_card.card_id)
-
-        # 3. Edit live status message in Telegram
-        card_text = format_card_text(doc, pending_card.card)
-        final_text = f"✅ Документ #{item.wh_doc_id or save_result.doc_id} збережено в архів та склад!\n\n{card_text}"
-        if warehouse_msg:
-            final_text += f"\n\n{warehouse_msg}"
-
-        if item.status_message_id is not None:
-            try:
-                await bot.edit_message_text(
-                    chat_id=item.chat_id,
-                    message_id=item.status_message_id,
-                    text=final_text,
-                )
-                return
-            except Exception as exc:
-                logger.debug("Failed to edit Telegram status message %s: %s", item.status_message_id, exc)
-
-        try:
-            await bot.send_message(
-                chat_id=item.chat_id,
-                text=final_text,
-            )
-        except Exception as exc:
-            logger.error("Failed to send card message to chat %s: %s", item.chat_id, exc)
+    ctx = AppContext(
+        owner_user_id=settings.owner_user_id,
+        bot=bot,
+        gen_pool=gen_pool,
+        emb_pool=emb_pool,
+        archive_service=archive_svc,
+        rag_service=rag_svc,
+        intake_service=intake_service,
+        media_handler=media_handler,
+        list_delete=list_delete,
+        vector_store=vector_store,
+        warehouse_db=warehouse_db,
+        file_store=file_store,
+    )
 
     queue_service = DocumentQueueService(
         gateway=gateway,
         doc_structurer=doc_structurer,
         file_store=file_store,
         bot=bot,
-        on_card_ready=_on_card_ready,
+        on_card_ready=lambda card: cards.on_card_ready(ctx, card),
         item_delay_sec=getattr(settings, "queue_item_delay_sec", 3.0),
         warehouse_db=warehouse_db,
         default_chat_id=settings.owner_user_id,
         default_user_id=settings.owner_user_id,
     )
-
-    intake_service = DocumentIntakeService(
-        file_store=file_store,
-        warehouse_db=warehouse_db,
-    )
-
-    dedup_pending: dict[str, dict] = {}
+    ctx.queue_service = queue_service
 
     # --- Router wiring ---
+    # Order matters: the catch-all text handler in query.py goes last, or it
+    # would swallow the media that files.py is waiting for.
     rt = Router(name="app")
-
-    @rt.message(Command("status"))
-    async def _status(message: Message):
-        await cmd_status(
-            message,
-            gen_pool=gen_pool,
-            emb_pool=emb_pool,
-            queue_service=queue_service,
-        )
-
-    @rt.message(Command("list"))
-    async def _list(message: Message):
-        await list_delete.handle_list(message, user_id=settings.owner_user_id)
-
-    @rt.message(Command("delete"))
-    async def _delete(message: Message):
-        parts = (message.text or "").split(maxsplit=1)
-        if len(parts) < 2:
-            await message.answer("Використання: /delete <id>")
-            return
-        result = await list_delete.delete_doc(
-            doc_id=parts[1].strip(), user_id=settings.owner_user_id
-        )
-        if result.success:
-            await message.answer("Документ видалено.")
-        else:
-            await message.answer(result.error or "Помилка видалення.")
-
-    @rt.message(Command("clear"))
-    async def _clear(message: Message):
-        await cmd_clear(message, queue_service=queue_service)
-
-    @rt.message(F.photo | F.document)
-    async def _media(message: Message):
-        intake = await media_handler.handle_media(message)
-        if intake is None:
-            return
-
-        unique_id = intake["file_unique_id"]
-
-        # Dedup check in archive and active/queued queue
-        existing = archive_svc.lookup_duplicate(
-            user_id=settings.owner_user_id,
-            file_unique_id=unique_id,
-        )
-        is_dup = (existing is not None) or queue_service.has_file_unique_id(unique_id)
-
-        if is_dup:
-            dedup_id = uuid.uuid4().hex[:8]
-            dedup_pending[dedup_id] = intake
-            existing_id = existing["id"] if existing else ""
-            if existing_id:
-                kb = InlineKeyboardMarkup(inline_keyboard=[[
-                    InlineKeyboardButton(text="Відкрити старий", callback_data=f"dedup_open:{existing_id}"),
-                    InlineKeyboardButton(text="Все одно зберегти", callback_data=f"dedup_force:{dedup_id}"),
-                ]])
-                await message.answer("Цей файл вже є в архіві.", reply_markup=kb)
-            else:
-                await message.answer("Цей файл вже знаходиться в черзі на обробку.")
-            return
-
-        # Unsaved cards reminder
-        pending_count = queue_service.get_pending_card_count(user_id=settings.owner_user_id)
-        if pending_count > 0:
-            await message.answer(f"ℹ️ Зверни увагу: у тебе є {pending_count} незбережених карток на підтвердження.")
-
-        intake_result = await intake_service.accept(intake, message.bot)
-
-        status_msg = await message.answer(intake_result.message)
-        status_id = getattr(status_msg, "message_id", None)
-
-        item = QueueItem(
-            file_id=intake["file_id"],
-            file_unique_id=intake["file_unique_id"],
-            mime=intake["mime"],
-            file_size=intake["file_size"],
-            tmp_path=intake_result.file_path,
-            chat_id=message.chat.id,
-            user_id=message.from_user.id if message.from_user else settings.owner_user_id,
-            status_message_id=status_id,
-            source=intake["source"],
-            file_name=intake.get("file_name"),
-            ext=intake.get("ext", ".jpg"),
-            wh_doc_id=intake_result.doc_id,
-        )
-        await queue_service.enqueue(item)
-
-    @rt.callback_query(F.data.startswith("confirm_save"))
-    async def _save(callback: CallbackQuery):
-        if ":" in callback.data:
-            card_id = callback.data.split(":", 1)[1]
-            card = queue_service.get_card(card_id)
-        else:
-            cards = queue_service.list_pending_cards(user_id=settings.owner_user_id)
-            card = cards[0] if cards else None
-            card_id = card.card_id if card else ""
-
-        if card is None:
-            await callback.answer("Ця картка більше не активна (чергу очищено або документ вже оброблено).", show_alert=True)
-            if callback.message:
-                try:
-                    await callback.message.edit_reply_markup(reply_markup=None)
-                except Exception:
-                    pass
-            return
-
-        if callback.message:
-            try:
-                await callback.message.edit_reply_markup(reply_markup=None)
-            except Exception:
-                pass
-
-        queue_service.remove_card(card_id)
-        doc = card.doc
-
-        status_msg = None
-
-        async def _on_save_status_update(status_text: str) -> None:
-            nonlocal status_msg
-            if callback.message:
-                try:
-                    if status_msg is None:
-                        status_msg = await callback.message.answer(status_text)
-                    else:
-                        await status_msg.edit_text(status_text)
-                except Exception as exc:
-                    logger.debug("Failed to update save status message: %s", exc)
-
-        save_result = await archive_svc.save(
-            title=doc.title,
-            summary=doc.summary,
-            key_value_pairs=doc.key_value_pairs,
-            raw_text=doc.raw_text,
-            tmp_path=card.item.tmp_path,
-            ext=card.item.ext,
-            user_id=card.item.user_id,
-            telegram_file_id=card.item.file_id,
-            file_unique_id=card.item.file_unique_id,
-            file_name=card.item.file_name,
-            mime=card.item.mime,
-            source=card.item.source,
-            doc_number=getattr(doc, "doc_number", ""),
-            doc_date=getattr(doc, "doc_date", ""),
-            items=getattr(doc, "items", []),
-            totals=getattr(doc, "totals", {}),
-            item_name=getattr(doc, "item_name", ""),
-            incoming=getattr(doc, "incoming", ""),
-            outgoing=getattr(doc, "outgoing", ""),
-            balance=getattr(doc, "balance", ""),
-            unit=getattr(doc, "unit", ""),
-            supplier=getattr(doc, "supplier", ""),
-            notes=getattr(doc, "notes", ""),
-            on_status_update=_on_save_status_update,
-        )
-
-        warehouse_msg = ""
-        if save_result.success:
-            try:
-                pending_dict = {
-                    "file_name": card.item.file_name,
-                    "ext": card.item.ext,
-                    "mime": card.item.mime,
-                }
-                warehouse_msg = _save_to_warehouse(
-                    warehouse_db, file_store, doc, pending_dict, save_result.doc_id,
-                    existing_doc_id=card.item.wh_doc_id,
-                )
-            except Exception as exc:
-                logger.warning("Warehouse save failed: %s", exc)
-                warehouse_msg = "\n⚠️ Помилка збереження в складську таблицю."
-
-        if save_result.success:
-            text = f"Збережено (id: <code>{save_result.doc_id}</code>)."
-            if save_result.disk_warning:
-                text += "\n⚠️ Локальна копія не збережена, але документ в архіві."
-            if warehouse_msg:
-                text += "\n" + warehouse_msg
-            if callback.message:
-                if status_msg is not None:
-                    try:
-                        await status_msg.edit_text(text)
-                    except Exception:
-                        await callback.message.answer(text)
-                else:
-                    await callback.message.answer(text)
-        else:
-            if callback.message:
-                err_text = f"Помилка збереження: {save_result.error}"
-                if status_msg is not None:
-                    try:
-                        await status_msg.edit_text(err_text)
-                    except Exception:
-                        await callback.message.answer(err_text)
-                else:
-                    await callback.message.answer(err_text)
-        await callback.answer()
-
-    @rt.callback_query(F.data.startswith("confirm_reject"))
-    async def _reject(callback: CallbackQuery):
-        if ":" in callback.data:
-            card_id = callback.data.split(":", 1)[1]
-            card = queue_service.get_card(card_id)
-        else:
-            cards = queue_service.list_pending_cards(user_id=settings.owner_user_id)
-            card = cards[0] if cards else None
-            card_id = card.card_id if card else ""
-
-        if card is None:
-            await callback.answer("Ця картка більше не активна (чергу очищено або документ вже оброблено).", show_alert=True)
-            if callback.message:
-                try:
-                    await callback.message.edit_reply_markup(reply_markup=None)
-                except Exception:
-                    pass
-            return
-
-        if callback.message:
-            try:
-                await callback.message.edit_reply_markup(reply_markup=None)
-            except Exception:
-                pass
-
-        queue_service.remove_card(card_id)
-        if card.item.tmp_path and os.path.exists(card.item.tmp_path):
-            try:
-                file_store.delete_tmp(card.item.tmp_path)
-            except Exception as exc:
-                logger.warning("Failed to delete tmp file %s: %s", card.item.tmp_path, exc)
-
-        if card.item.wh_doc_id is not None:
-            try:
-                warehouse_db.delete_document(card.item.wh_doc_id)
-            except Exception as exc:
-                logger.warning("Failed to drop queued document %s: %s", card.item.wh_doc_id, exc)
-
-        if callback.message:
-            await callback.message.answer("Відхилено — тимчасовий файл видалено.")
-        await callback.answer()
-
-    @rt.callback_query(F.data.startswith("dedup_open:"))
-    async def _dedup_open(callback: CallbackQuery):
-        doc_id = callback.data.split(":", 1)[1]
-        doc = vector_store.get(doc_id)
-        meta = doc.get("metadata", {}) if doc else {}
-        if meta and callback.message:
-            await send_archive_file(
-                message=callback.message,
-                file_store=file_store,
-                doc_id=doc_id,
-                metadata=meta,
-                error_text="Не вдалося надіслати оригінал.",
-            )
-        elif callback.message:
-            await callback.message.answer("Не вдалося надіслати оригінал.")
-
-        if callback.message:
-            try:
-                await callback.message.edit_reply_markup(reply_markup=None)
-            except Exception:
-                pass
-        await callback.answer()
-
-    @rt.callback_query(F.data.startswith("dedup_force"))
-    async def _dedup_force(callback: CallbackQuery):
-        parts = callback.data.split(":", 1)
-        if len(parts) > 1:
-            dedup_id = parts[1]
-            intake = dedup_pending.pop(dedup_id, None)
-        else:
-            intake = next(iter(dedup_pending.values()), None) if dedup_pending else None
-            dedup_pending.clear()
-
-        if callback.message:
-            try:
-                await callback.message.edit_reply_markup(reply_markup=None)
-            except Exception:
-                pass
-
-        if intake and callback.message:
-            pending_count = queue_service.get_pending_card_count(user_id=settings.owner_user_id)
-            if pending_count > 0:
-                await callback.message.answer(f"ℹ️ Зверни увагу: у тебе є {pending_count} незбережених карток на підтвердження.")
-
-            intake_result = await intake_service.accept(intake, callback.message.bot)
-
-            status_msg = await callback.message.answer(intake_result.message)
-            status_id = getattr(status_msg, "message_id", None)
-
-            item = QueueItem(
-                file_id=intake["file_id"],
-                file_unique_id=intake["file_unique_id"],
-                mime=intake["mime"],
-                file_size=intake["file_size"],
-                tmp_path=intake_result.file_path,
-                chat_id=callback.message.chat.id,
-                user_id=callback.from_user.id if callback.from_user else settings.owner_user_id,
-                status_message_id=status_id,
-                source=intake["source"],
-                file_name=intake.get("file_name"),
-                ext=intake.get("ext", ".jpg"),
-                wh_doc_id=intake_result.doc_id,
-            )
-            await queue_service.enqueue(item)
-
-        await callback.answer()
-
-    @rt.callback_query(F.data.startswith("file:"))
-    async def _send_file(callback: CallbackQuery):
-        doc_id = callback.data.split(":", 1)[1]
-        doc = vector_store.get(doc_id)
-        if doc and callback.message:
-            await send_archive_file(
-                message=callback.message,
-                file_store=file_store,
-                doc_id=doc_id,
-                metadata=doc.get("metadata", {}),
-                error_text="Не вдалося надіслати файл.",
-            )
-        elif callback.message:
-            await callback.message.answer("Не вдалося надіслати файл.")
-        await callback.answer()
-
-    @rt.callback_query(F.data.startswith("del_yes:"))
-    async def _del_confirm(callback: CallbackQuery):
-        doc_id = callback.data.split(":", 1)[1]
-        result = await list_delete.delete_doc(
-            doc_id=doc_id, user_id=settings.owner_user_id
-        )
-        if callback.message:
-            if result.success:
-                await callback.message.answer("Видалено.")
-            else:
-                await callback.message.answer(result.error or "Помилка.")
-        await callback.answer()
-
-    @rt.callback_query(F.data == "del_no")
-    async def _del_cancel(callback: CallbackQuery):
-        if callback.message:
-            await callback.message.answer("Скасовано.")
-        await callback.answer()
-
-    @rt.message(~Command("start", "help", "status", "list", "delete", "clear"))
-    async def _text(message: Message):
-        if message.photo or message.document:
-            return
-        text = (message.text or "").strip()
-        if not text:
-            return
-        rag_result = await rag_svc.answer(
-            user_id=settings.owner_user_id, question=text
-        )
-        if rag_result.trivial:
-            return
-        if rag_result.empty_archive:
-            await message.answer("Архів порожній — спершу надішли зображення документів.")
-            return
-        if rag_result.not_found:
-            await message.answer("Не знайшов відповідної інформації в архіві.")
-            return
-
-        buttons = []
-        for src in rag_result.sources:
-            buttons.append([InlineKeyboardButton(
-                text=f"📎 {src['doc_id']}",
-                callback_data=f"file:{src['doc_id']}",
-            )])
-        kb = InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None
-        await message.answer(h(rag_result.answer), reply_markup=kb)
+    manage.register(rt, ctx)
+    files.register(rt, ctx)
+    cards.register(rt, ctx)
+    query.register(rt, ctx)
 
     # --- Build dispatcher ---
     dp = Dispatcher()
