@@ -10,11 +10,13 @@ nomenclature and its transactions in one place.
 from __future__ import annotations
 
 import re
-from typing import Any, Optional
+from typing import Any, Dict, List, Optional
 
 from kolobot.file_store import FileStore
+from kolobot.m11_matcher import compare_items, find_best_match
 from kolobot.messages import unaccounted_notice_uk
 from kolobot.warehouse_db import WarehouseDB
+
 
 
 def _detect_doc_type_and_op(doc: Any) -> tuple[str, str]:
@@ -95,6 +97,111 @@ def _detect_doc_type_and_op(doc: Any) -> tuple[str, str]:
     return raw_doc_type.upper() if raw_doc_type else "", ""
 
 
+def match_m11_document(wdb: WarehouseDB, m11_doc_id: int) -> Optional[Dict[str, Any]]:
+    """Match a single M-11 document against all existing classic ВИМОГА documents.
+
+    If a match is found ('full' or 'partial'):
+      - Detects conflicts: needs_review = 1 if matched ВИМОГА already has another M-11 linked.
+      - Creates a row in document_links.
+      - Returns link dict.
+    If 'none' or no candidates:
+      - Does not create document_links row.
+      - Returns None.
+    """
+    m11_items = wdb.get_m11_items_by_document(m11_doc_id)
+    if not m11_items:
+        return None
+
+    candidates = wdb.get_all_vimoga_documents_with_items(exclude_doc_id=m11_doc_id)
+    if not candidates:
+        return None
+
+    best_doc_id, match_status = find_best_match(m11_items, candidates)
+    if match_status == "none" or best_doc_id is None:
+        return None
+
+    existing_links = wdb.get_document_links_for_vimoga(best_doc_id)
+    has_conflict = any(link["m11_doc_id"] != m11_doc_id for link in existing_links)
+    needs_review = 1 if has_conflict else 0
+
+    link_id = wdb.add_document_link(
+        m11_doc_id=m11_doc_id,
+        vimoga_doc_id=best_doc_id,
+        match_status=match_status,
+        needs_review=needs_review,
+    )
+    return {
+        "id": link_id,
+        "m11_doc_id": m11_doc_id,
+        "vimoga_doc_id": best_doc_id,
+        "match_status": match_status,
+        "needs_review": needs_review,
+    }
+
+
+def match_vimoga_document(wdb: WarehouseDB, vimoga_doc_id: int) -> List[Dict[str, Any]]:
+    """Match a classic ВИМОГА document against all unlinked M-11 documents.
+
+    For each matching unlinked M-11 ('full' or 'partial'):
+      - Detects conflicts: needs_review = 1 if matched ВИМОГА already has another M-11 linked.
+      - Creates a row in document_links.
+    If 'none':
+      - M-11 stays unlinked (no document_links row).
+    Returns list of created link dicts.
+    """
+    vimoga_items = wdb.get_vimoga_items(vimoga_doc_id)
+    if not vimoga_items:
+        return []
+
+    unlinked_m11_docs = wdb.get_unlinked_m11_documents()
+    if not unlinked_m11_docs:
+        return []
+
+    matches = []
+    for m11_doc in unlinked_m11_docs:
+        m11_id = m11_doc["id"]
+        m11_items = wdb.get_m11_items_by_document(m11_id)
+        if not m11_items:
+            continue
+        status = compare_items(m11_items, vimoga_items)
+        if status in ("full", "partial"):
+            matches.append({
+                "m11_doc_id": m11_id,
+                "match_status": status,
+            })
+
+    if not matches:
+        return []
+
+    # Process 'full' matches before 'partial' matches
+    matches.sort(key=lambda m: (0 if m["match_status"] == "full" else 1, m["m11_doc_id"]))
+
+    created_links = []
+    for m in matches:
+        m11_id = m["m11_doc_id"]
+        match_status = m["match_status"]
+
+        existing_links = wdb.get_document_links_for_vimoga(vimoga_doc_id)
+        has_conflict = any(link["m11_doc_id"] != m11_id for link in existing_links)
+        needs_review = 1 if has_conflict else 0
+
+        link_id = wdb.add_document_link(
+            m11_doc_id=m11_id,
+            vimoga_doc_id=vimoga_doc_id,
+            match_status=match_status,
+            needs_review=needs_review,
+        )
+        created_links.append({
+            "id": link_id,
+            "m11_doc_id": m11_id,
+            "vimoga_doc_id": vimoga_doc_id,
+            "match_status": match_status,
+            "needs_review": needs_review,
+        })
+
+    return created_links
+
+
 def _save_to_warehouse(
     wdb: WarehouseDB,
     fs: FileStore,
@@ -124,6 +231,7 @@ def _save_to_warehouse(
         # Позначку ручного редагування скидаємо: значення документа знову машинні.
         wdb.clear_document_transactions(existing_doc_id)
         wdb.delete_m11_items_by_document(existing_doc_id)
+        wdb.delete_document_links_by_document(existing_doc_id)
         wdb.update_document(
             existing_doc_id,
             filename=file_name,
@@ -202,6 +310,8 @@ def _save_to_warehouse(
                     nomenclature_number=sku,
                 )
                 m11_count += 1
+
+        match_m11_document(wdb, wh_doc_id)
 
         parts = []
         if m11_count:
@@ -332,6 +442,9 @@ def _save_to_warehouse(
                     source_row=source_row,
                 )
                 txs += 1
+
+    if doc_type_label == "ВИМОГА":
+        match_vimoga_document(wdb, wh_doc_id)
 
     parts = []
     if created:

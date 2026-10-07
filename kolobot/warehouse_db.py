@@ -841,3 +841,58 @@ class WarehouseDB:
         )
         self._conn.commit()
         return cur.rowcount
+
+    def get_vimoga_items(self, document_id: int) -> List[Dict[str, Any]]:
+        """Get items for a classic ВИМОГА document from warehouse_transactions and warehouse_items."""
+        rows = self._conn.execute("""
+            SELECT wi.name, wt.quantity, wi.sku, wi.unit
+            FROM warehouse_transactions wt
+            JOIN warehouse_items wi ON wt.item_id = wi.id
+            WHERE wt.document_id = ?
+            ORDER BY wt.id ASC
+        """, (document_id,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_all_vimoga_documents_with_items(
+        self, exclude_doc_id: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
+        """Get all classic ВИМОГА documents with their items for matching."""
+        query = """
+            SELECT d.id AS doc_id, wi.name, wt.quantity
+            FROM documents d
+            JOIN warehouse_transactions wt ON wt.document_id = d.id
+            JOIN warehouse_items wi ON wt.item_id = wi.id
+            WHERE TRIM(UPPER(d.doc_type)) = 'ВИМОГА'
+        """
+        params: List[Any] = []
+        if exclude_doc_id is not None:
+            query += " AND d.id != ?"
+            params.append(exclude_doc_id)
+        query += " ORDER BY d.id ASC, wt.id ASC"
+        rows = self._conn.execute(query, params).fetchall()
+
+        candidates_map: Dict[int, List[Dict[str, Any]]] = {}
+        for r in rows:
+            candidates_map.setdefault(r["doc_id"], []).append({
+                "name": r["name"],
+                "quantity": r["quantity"],
+            })
+
+        return [
+            {"doc_id": doc_id, "items": items}
+            for doc_id, items in candidates_map.items()
+        ]
+
+    def get_unlinked_m11_documents(self) -> List[Dict[str, Any]]:
+        """Get all M-11 documents that do not have an entry in document_links."""
+        rows = self._conn.execute("""
+            SELECT d.*
+            FROM documents d
+            WHERE TRIM(UPPER(d.doc_type)) = 'ВИМОГА М-11'
+              AND d.id NOT IN (
+                  SELECT m11_doc_id FROM document_links WHERE m11_doc_id IS NOT NULL
+              )
+            ORDER BY d.id ASC
+        """).fetchall()
+        return [dict(r) for r in rows]
+

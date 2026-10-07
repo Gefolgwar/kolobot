@@ -42,7 +42,12 @@ from kolobot.warehouse_db import WarehouseDB
 # itself lives in the module on the right.
 from kolobot.archive_delivery import send_archive_file  # noqa: F401
 from kolobot.card_view import format_card_text, make_card_keyboard  # noqa: F401
-from kolobot.warehouse_writer import _detect_doc_type_and_op, _save_to_warehouse  # noqa: F401
+from kolobot.warehouse_writer import (  # noqa: F401
+    _detect_doc_type_and_op,
+    _save_to_warehouse,
+    match_m11_document,
+    match_vimoga_document,
+)
 
 logger = logging.getLogger(__name__)
 
