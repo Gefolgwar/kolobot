@@ -1,4 +1,41 @@
 
+function formatLinkedDocNum(num) {
+    if (!num) return '';
+    const s = String(num).trim();
+    return s.startsWith('№') ? s : '№' + s;
+}
+
+function docLinkIndicator(doc) {
+    const normType = (doc.doc_type || '').trim().toUpperCase();
+    let html = '';
+
+    if (normType === 'ВИМОГА') {
+        if (doc.linked_doc_id) {
+            const linkedNum = doc.linked_doc_number || doc.linked_doc_id;
+            html += ` <span class="text-blue-400 ml-1.5 inline-flex items-center" title="Пов'язана з М-11 ${esc(formatLinkedDocNum(linkedNum))}"><i class="fa-solid fa-link"></i></span>`;
+        }
+    } else if (normType === 'ВИМОГА М-11' || normType === 'М-11') {
+        const status = doc.match_status || 'none';
+        if (status === 'full') {
+            html += ' <span class="text-emerald-400 ml-1.5 inline-flex items-center" title="Повний збіг"><i class="fa-solid fa-check"></i></span>';
+        } else if (status === 'partial') {
+            html += ' <span class="text-amber-400 ml-1.5 inline-flex items-center" title="Частковий збіг"><i class="fa-solid fa-exclamation"></i></span>';
+        } else {
+            html += ' <span class="text-rose-500 ml-1.5 inline-flex items-center" title="Немає збігу"><i class="fa-solid fa-circle text-[10px]"></i></span>';
+        }
+        if (doc.linked_doc_id) {
+            const linkedNum = doc.linked_doc_number || doc.linked_doc_id;
+            html += ` <span class="text-xs text-slate-300 font-mono ml-1" title="Пов'язана з ВИМОГА ${esc(formatLinkedDocNum(linkedNum))}">${esc(formatLinkedDocNum(linkedNum))}</span>`;
+        }
+    }
+
+    if (doc.needs_review) {
+        html += ' <span class="text-amber-400 ml-1 inline-flex items-center" title="Потребує перевірки"><i class="fa-solid fa-triangle-exclamation"></i></span>';
+    }
+
+    return html;
+}
+
 function renderDocs(docs) {
     lastRenderedDocs = docs;
     const sorted = applyDocSort(docs);
@@ -22,11 +59,14 @@ function renderDocs(docs) {
         const docNumberCls = twinCount ? 'doc-dup' : 'text-slate-300';
         // Мітка «не в обліку»: перелік не розпізнаних полів дає бекенд, клітинка лише показує його
         const missingFields = doc.missing_fields || [];
+        const normDocType = docType.trim().toUpperCase();
         let docTypeBadge = '';
-        if (docType === 'НАКЛАДНА') {
+        if (normDocType === 'НАКЛАДНА') {
             docTypeBadge = '<span class="px-2 py-0.5 rounded-full text-[11px] font-medium badge-nakladna"><i class="fa-solid fa-arrow-down mr-1"></i>Накладна</span>';
-        } else if (docType === 'ВИМОГА') {
+        } else if (normDocType === 'ВИМОГА') {
             docTypeBadge = '<span class="px-2 py-0.5 rounded-full text-[11px] font-medium badge-vymoha"><i class="fa-solid fa-arrow-up mr-1"></i>Вимога</span>';
+        } else if (normDocType === 'ВИМОГА М-11' || normDocType === 'М-11') {
+            docTypeBadge = '<span class="px-2 py-0.5 rounded-full text-[11px] font-medium badge-import" title="ВИМОГА М-11"><i class="fa-solid fa-file-invoice mr-1"></i>Вимога М-11</span>';
         } else if (docType) {
             docTypeBadge = `<span class="px-2 py-0.5 rounded-full text-[11px] font-medium badge-import">${esc(docType)}</span>`;
         } else {
@@ -60,7 +100,7 @@ function renderDocs(docs) {
             <td class="py-4 px-3" data-label="Превʼю">${previewBtn}</td>
             <td class="py-4 px-3 font-medium text-slate-200 break-words" data-label="Файл">${esc(doc.filename)}</td>
             <td class="py-4 px-3" data-label="Тип"><span class="px-2 py-0.5 rounded-full text-[11px] font-medium badge-import">${typeLabel}</span></td>
-            <td class="py-4 px-3" data-label="Тип документу">${docTypeBadge}</td>
+            <td class="py-4 px-3" data-label="Тип документу">${docTypeBadge}${docLinkIndicator(doc)}</td>
             <td class="py-4 px-3" data-label="Статус">${docStatusBadge(doc)}</td>
             <td class="py-4 px-3 text-slate-300" data-label="Дата завантаження">${date}</td>
             <td class="py-4 px-3 font-mono ${docNumberCls}" data-label="№ документа">${esc(doc.doc_number)}${docNumberTwinMark(twinCount)}</td>

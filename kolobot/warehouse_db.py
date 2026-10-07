@@ -548,11 +548,26 @@ class WarehouseDB:
             GROUP BY d.id
             ORDER BY d.uploaded_at DESC
         """).fetchall()
+        links_by_doc = self.get_document_links_map()
         result = []
         for r in rows:
             d = dict(r)
             d["manual_edited"] = bool(d["manual_edited"])
             d["missing_fields"] = missing_doc_fields(d)
+            doc_id = d["id"]
+            doc_type = (d.get("doc_type") or "").strip().upper()
+
+            link_info = links_by_doc.get(doc_id)
+            if link_info:
+                d["linked_doc_id"] = link_info["linked_doc_id"]
+                d["linked_doc_number"] = link_info["linked_doc_number"]
+                d["match_status"] = link_info["match_status"]
+                d["needs_review"] = link_info["needs_review"]
+            else:
+                d["linked_doc_id"] = None
+                d["linked_doc_number"] = None
+                d["match_status"] = "none" if doc_type in ("ВИМОГА М-11", "М-11") else None
+                d["needs_review"] = 0
             result.append(d)
         return result
 
@@ -841,6 +856,70 @@ class WarehouseDB:
         )
         self._conn.commit()
         return cur.rowcount
+
+    def get_document_links_map(self) -> Dict[int, Dict[str, Any]]:
+        """Get link information indexed by document ID for all linked documents."""
+        link_rows = self._conn.execute("""
+            SELECT
+                dl.id, dl.m11_doc_id, dl.vimoga_doc_id, dl.match_status, dl.needs_review,
+                m11.doc_number AS m11_doc_number,
+                vimoga.doc_number AS vimoga_doc_number
+            FROM document_links dl
+            LEFT JOIN documents m11 ON dl.m11_doc_id = m11.id
+            LEFT JOIN documents vimoga ON dl.vimoga_doc_id = vimoga.id
+            ORDER BY dl.id ASC
+        """).fetchall()
+
+        links_by_doc: Dict[int, Dict[str, Any]] = {}
+        for lr in link_rows:
+            m11_id = lr["m11_doc_id"]
+            vimoga_id = lr["vimoga_doc_id"]
+            m_status = lr["match_status"]
+            n_review = int(lr["needs_review"] or 0)
+            m11_num = lr["m11_doc_number"] or ""
+            vimoga_num = lr["vimoga_doc_number"] or ""
+
+            # For M-11 document: points to vimoga
+            if m11_id not in links_by_doc:
+                links_by_doc[m11_id] = {
+                    "linked_doc_id": vimoga_id,
+                    "linked_doc_number": vimoga_num,
+                    "match_status": m_status,
+                    "needs_review": n_review,
+                }
+            else:
+                if n_review == 1:
+                    links_by_doc[m11_id]["needs_review"] = 1
+                if m_status == "full":
+                    links_by_doc[m11_id]["match_status"] = "full"
+                prev_num = links_by_doc[m11_id]["linked_doc_number"]
+                if vimoga_num and prev_num:
+                    if vimoga_num not in prev_num.split(", "):
+                        links_by_doc[m11_id]["linked_doc_number"] = f"{prev_num}, {vimoga_num}"
+                elif vimoga_num:
+                    links_by_doc[m11_id]["linked_doc_number"] = vimoga_num
+
+            # For vimoga document: points to m11
+            if vimoga_id not in links_by_doc:
+                links_by_doc[vimoga_id] = {
+                    "linked_doc_id": m11_id,
+                    "linked_doc_number": m11_num,
+                    "match_status": m_status,
+                    "needs_review": n_review,
+                }
+            else:
+                if n_review == 1:
+                    links_by_doc[vimoga_id]["needs_review"] = 1
+                if m_status == "full":
+                    links_by_doc[vimoga_id]["match_status"] = "full"
+                prev_num = links_by_doc[vimoga_id]["linked_doc_number"]
+                if m11_num and prev_num:
+                    if m11_num not in prev_num.split(", "):
+                        links_by_doc[vimoga_id]["linked_doc_number"] = f"{prev_num}, {m11_num}"
+                elif m11_num:
+                    links_by_doc[vimoga_id]["linked_doc_number"] = m11_num
+
+        return links_by_doc
 
     def get_vimoga_items(self, document_id: int) -> List[Dict[str, Any]]:
         """Get items for a classic ВИМОГА document from warehouse_transactions and warehouse_items."""
