@@ -49,6 +49,7 @@ GOLDEN_ROUTES = {
     ("DELETE", "/api/warehouse/documents/{doc_id}"),
     ("POST", "/api/warehouse/import"),
     ("GET", "/api/warehouse/export"),
+    ("GET", "/api/warehouse/m11"),
     ("GET", "/api/logs"),
     ("POST", "/api/logs/clear"),
     ("DELETE", "/api/logs"),
@@ -87,7 +88,7 @@ def test_route_table_is_exactly_this(ctx):
 
     assert {(r.method, r.path) for r in routes} == GOLDEN_ROUTES
     assert len(routes) == len(GOLDEN_ROUTES)
-    assert len({r.path for r in routes}) == 19
+    assert len({r.path for r in routes}) == 20
 
     # What the application actually answers: the table above, plus the HEAD
     # aiohttp registers with every GET. A route that stopped being reachable

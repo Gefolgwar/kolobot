@@ -49,6 +49,10 @@
                 <i class="fa-solid fa-file-lines mr-1"></i> Документи
                 <span id="docs-count" class="ml-1 px-2 py-0.5 bg-slate-800 text-slate-400 rounded-full text-xs">0</span>
             </button>
+            <button id="tab-m11" onclick="switchTab('m11')" class="pb-3 px-1 text-sm font-semibold tab-inactive transition flex items-center">
+                <i class="fa-solid fa-file-invoice mr-1.5 text-xs"></i> Вимоги М-11
+                <span id="m11-badge" class="ml-1.5 px-2 py-0.5 bg-slate-800 text-slate-500 rounded-full text-xs font-mono">0</span>
+            </button>
             <button id="tab-logs" onclick="switchTab('logs')" class="pb-3 px-1 text-sm font-semibold tab-inactive transition flex items-center">
                 <i class="fa-solid fa-terminal mr-1.5 text-xs"></i> Log
                 <span id="logs-count" class="ml-1.5 px-2 py-0.5 bg-slate-800 text-slate-400 rounded-full text-xs font-mono">0</span>
@@ -58,6 +62,7 @@
 
 {{warehouse.html}}
 {{documents.html}}
+{{m11.html}}
 {{logs.html}}
 {{document_modals.html}}
 <script>

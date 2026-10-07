@@ -896,3 +896,77 @@ class WarehouseDB:
         """).fetchall()
         return [dict(r) for r in rows]
 
+    def get_m11_documents(self) -> List[Dict[str, Any]]:
+        """Get all M-11 documents with item count, match status, and linked ВИМОГА info."""
+        docs_rows = self._conn.execute("""
+            SELECT
+                d.id, d.filename, d.file_type, d.file_path, d.uploaded_at,
+                d.doc_number, d.doc_date, d.doc_type, d.raw_text,
+                d.status, d.error_message, d.requested_by, d.requested_via, d.manual_edited,
+                COUNT(mi.id) AS item_count
+            FROM documents d
+            LEFT JOIN m11_items mi ON mi.document_id = d.id
+            WHERE TRIM(UPPER(d.doc_type)) = 'ВИМОГА М-11'
+            GROUP BY d.id
+            ORDER BY d.uploaded_at DESC, d.id DESC
+        """).fetchall()
+
+        if not docs_rows:
+            return []
+
+        doc_ids = [r["id"] for r in docs_rows]
+        placeholders = ",".join("?" for _ in doc_ids)
+
+        links_rows = self._conn.execute(f"""
+            SELECT
+                dl.id AS link_id,
+                dl.m11_doc_id,
+                dl.vimoga_doc_id,
+                dl.match_status,
+                dl.needs_review,
+                vd.id AS found_vimoga_id,
+                vd.doc_number AS vimoga_doc_number,
+                vd.doc_date AS vimoga_doc_date,
+                vd.filename AS vimoga_filename,
+                vd.file_type AS vimoga_file_type
+            FROM document_links dl
+            LEFT JOIN documents vd ON vd.id = dl.vimoga_doc_id
+            WHERE dl.m11_doc_id IN ({placeholders})
+            ORDER BY dl.id DESC
+        """, doc_ids).fetchall()
+
+        links_map: Dict[int, Any] = {}
+        for lr in links_rows:
+            m11_id = lr["m11_doc_id"]
+            if m11_id not in links_map:
+                links_map[m11_id] = lr
+
+        result = []
+        for r in docs_rows:
+            d = dict(r)
+            d["manual_edited"] = bool(d["manual_edited"])
+            link = links_map.get(d["id"])
+            if link:
+                d["match_status"] = link["match_status"]
+                d["needs_review"] = int(link["needs_review"])
+                d["link_id"] = link["link_id"]
+                if link["found_vimoga_id"] is not None:
+                    d["linked_vimoga"] = {
+                        "id": link["vimoga_doc_id"],
+                        "number": link["vimoga_doc_number"] or "",
+                        "doc_number": link["vimoga_doc_number"] or "",
+                        "date": link["vimoga_doc_date"] or "",
+                        "doc_date": link["vimoga_doc_date"] or "",
+                        "filename": link["vimoga_filename"] or "",
+                        "file_type": link["vimoga_file_type"] or "",
+                    }
+                else:
+                    d["linked_vimoga"] = None
+            else:
+                d["match_status"] = "none"
+                d["needs_review"] = 0
+                d["link_id"] = None
+                d["linked_vimoga"] = None
+            result.append(d)
+        return result
+
