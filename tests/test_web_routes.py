@@ -50,6 +50,10 @@ GOLDEN_ROUTES = {
     ("POST", "/api/warehouse/import"),
     ("GET", "/api/warehouse/export"),
     ("GET", "/api/warehouse/m11"),
+    ("POST", "/api/m11/links/{link_id}/confirm"),
+    ("DELETE", "/api/m11/links/{link_id}"),
+    ("POST", "/api/m11/{doc_id}/bind"),
+    ("GET", "/api/m11/available-vimogas"),
     ("GET", "/api/logs"),
     ("POST", "/api/logs/clear"),
     ("DELETE", "/api/logs"),
@@ -88,7 +92,7 @@ def test_route_table_is_exactly_this(ctx):
 
     assert {(r.method, r.path) for r in routes} == GOLDEN_ROUTES
     assert len(routes) == len(GOLDEN_ROUTES)
-    assert len({r.path for r in routes}) == 20
+    assert len({r.path for r in routes}) == 24
 
     # What the application actually answers: the table above, plus the HEAD
     # aiohttp registers with every GET. A route that stopped being reachable

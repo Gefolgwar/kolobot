@@ -849,6 +849,24 @@ class WarehouseDB:
         self._conn.commit()
         return cur.rowcount > 0
 
+    def delete_link(self, link_id: int) -> bool:
+        """Delete a document link by link ID."""
+        return self.delete_document_link(link_id)
+
+    def confirm_link(self, link_id: int) -> bool:
+        """Confirm a document link: set match_status to 'full' and needs_review to 0."""
+        return self.update_document_link(link_id, match_status="full", needs_review=0)
+
+    def create_manual_link(self, m11_doc_id: int, vimoga_doc_id: int) -> int:
+        """Manually link an M-11 document to a classic ВИМОГА document."""
+        self._conn.execute("DELETE FROM document_links WHERE m11_doc_id = ?", (m11_doc_id,))
+        return self.add_document_link(
+            m11_doc_id=m11_doc_id,
+            vimoga_doc_id=vimoga_doc_id,
+            match_status="manual",
+            needs_review=0,
+        )
+
     def delete_document_links_by_document(self, doc_id: int) -> int:
         cur = self._conn.execute(
             "DELETE FROM document_links WHERE m11_doc_id = ? OR vimoga_doc_id = ?",
@@ -1048,4 +1066,56 @@ class WarehouseDB:
                 d["linked_vimoga"] = None
             result.append(d)
         return result
+
+    def get_available_vimogas(self) -> List[Dict[str, Any]]:
+        """Get all classic ВИМОГА documents, unlinked first, with linked M-11 info."""
+        docs_rows = self._conn.execute("""
+            SELECT
+                d.id, d.filename, d.file_type, d.file_path, d.uploaded_at,
+                d.doc_number, d.doc_date, d.doc_type,
+                d.requested_by, d.requested_via
+            FROM documents d
+            WHERE TRIM(UPPER(d.doc_type)) = 'ВИМОГА'
+            ORDER BY d.uploaded_at DESC, d.id DESC
+        """).fetchall()
+
+        if not docs_rows:
+            return []
+
+        links_rows = self._conn.execute("""
+            SELECT
+                dl.id AS link_id,
+                dl.vimoga_doc_id,
+                dl.m11_doc_id,
+                m11.doc_number AS m11_doc_number
+            FROM document_links dl
+            LEFT JOIN documents m11 ON m11.id = dl.m11_doc_id
+            ORDER BY dl.id DESC
+        """).fetchall()
+
+        links_by_vimoga: Dict[int, Any] = {}
+        for lr in links_rows:
+            vid = lr["vimoga_doc_id"]
+            if vid not in links_by_vimoga:
+                links_by_vimoga[vid] = lr
+
+        unlinked: List[Dict[str, Any]] = []
+        linked: List[Dict[str, Any]] = []
+        for r in docs_rows:
+            d = dict(r)
+            link = links_by_vimoga.get(d["id"])
+            if link:
+                d["is_linked"] = True
+                d["link_id"] = link["link_id"]
+                d["linked_m11_doc_id"] = link["m11_doc_id"]
+                d["linked_m11_doc_number"] = link["m11_doc_number"] or ""
+                linked.append(d)
+            else:
+                d["is_linked"] = False
+                d["link_id"] = None
+                d["linked_m11_doc_id"] = None
+                d["linked_m11_doc_number"] = ""
+                unlinked.append(d)
+
+        return unlinked + linked
 

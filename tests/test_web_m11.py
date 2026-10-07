@@ -243,3 +243,226 @@ def test_m11_js_module_exists_and_reaches_page():
     assert "updateM11Badge" in js_content
     assert "renderM11Status" in js_content
     assert "renderLinkedVimoga" in js_content
+    assert "confirmM11Link" in js_content
+    assert "unbindM11Link" in js_content
+    assert "openBindModal" in js_content
+    assert "closeBindModal" in js_content
+    assert "selectVimogaForBind" in js_content
+    assert "filterAvailableVimogas" in js_content
+
+
+def test_m11_bind_modal_in_page():
+    """Verify manual bind modal markup exists in PAGE."""
+    assert 'id="m11-bind-modal"' in PAGE
+    assert 'id="m11-bind-search"' in PAGE
+    assert 'id="m11-bind-list"' in PAGE
+
+
+@pytest.mark.asyncio
+async def test_api_confirm_link(warehouse_env):
+    """POST /api/m11/links/{link_id}/confirm sets match_status=full and needs_review=0."""
+    db, fs, vs = warehouse_env
+
+    m11_id = db.add_document(filename="m11.pdf", file_type="pdf", doc_type="ВИМОГА М-11")
+    vimoga_id = db.add_document(filename="v.pdf", file_type="pdf", doc_type="ВИМОГА")
+    link_id = db.add_document_link(
+        m11_doc_id=m11_id,
+        vimoga_doc_id=vimoga_id,
+        match_status="partial",
+        needs_review=1,
+    )
+
+    server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
+    client = TestClient(TestServer(server.app))
+    await client.start_server()
+
+    try:
+        # Success
+        resp = await client.post(f"/api/m11/links/{link_id}/confirm")
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["success"] is True
+        assert data["match_status"] == "full"
+        assert data["needs_review"] == 0
+
+        # DB updated
+        link = db.get_document_link(link_id)
+        assert link["match_status"] == "full"
+        assert link["needs_review"] == 0
+
+        # 404 for unknown link
+        resp404 = await client.post("/api/m11/links/999999/confirm")
+        assert resp404.status == 404
+
+        # 400 for invalid id
+        resp400 = await client.post("/api/m11/links/abc/confirm")
+        assert resp400.status == 400
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_api_delete_link(warehouse_env):
+    """DELETE /api/m11/links/{link_id} unbinds documents and deletes the link."""
+    db, fs, vs = warehouse_env
+
+    m11_id = db.add_document(
+        filename="m11.pdf", file_type="pdf", doc_type="ВИМОГА М-11", doc_number="М11-01"
+    )
+    vimoga_id = db.add_document(
+        filename="v.pdf", file_type="pdf", doc_type="ВИМОГА", doc_number="В-01"
+    )
+    link_id = db.add_document_link(
+        m11_doc_id=m11_id,
+        vimoga_doc_id=vimoga_id,
+        match_status="partial",
+        needs_review=1,
+    )
+
+    server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
+    client = TestClient(TestServer(server.app))
+    await client.start_server()
+
+    try:
+        # Success
+        resp = await client.delete(f"/api/m11/links/{link_id}")
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["success"] is True
+
+        # DB record removed
+        assert db.get_document_link(link_id) is None
+
+        # M-11 is now unlinked in warehouse list
+        m11_resp = await client.get("/api/warehouse/m11")
+        m11_docs = await m11_resp.json()
+        assert len(m11_docs) == 1
+        assert m11_docs[0]["match_status"] == "none"
+        assert m11_docs[0]["linked_vimoga"] is None
+        assert m11_docs[0]["link_id"] is None
+
+        # 404 for already deleted or nonexistent
+        resp404 = await client.delete(f"/api/m11/links/{link_id}")
+        assert resp404.status == 404
+
+        # 400 for bad id
+        resp400 = await client.delete("/api/m11/links/invalid")
+        assert resp400.status == 400
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_api_bind_manually(warehouse_env):
+    """POST /api/m11/{doc_id}/bind links M-11 to vimoga with match_status=manual."""
+    db, fs, vs = warehouse_env
+
+    m11_id = db.add_document(
+        filename="m11.pdf", file_type="pdf", doc_type="ВИМОГА М-11", doc_number="М11-100"
+    )
+    vimoga_id = db.add_document(
+        filename="v.pdf", file_type="pdf", doc_type="ВИМОГА", doc_number="В-200"
+    )
+
+    server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
+    client = TestClient(TestServer(server.app))
+    await client.start_server()
+
+    try:
+        # Success
+        resp = await client.post(
+            f"/api/m11/{m11_id}/bind",
+            json={"vimoga_doc_id": vimoga_id},
+        )
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["success"] is True
+        assert data["m11_doc_id"] == m11_id
+        assert data["vimoga_doc_id"] == vimoga_id
+        assert data["match_status"] == "manual"
+        link_id = data["link_id"]
+
+        # Check DB
+        link = db.get_document_link(link_id)
+        assert link["match_status"] == "manual"
+        assert link["needs_review"] == 0
+
+        # Check warehouse list
+        m11_resp = await client.get("/api/warehouse/m11")
+        m11_docs = await m11_resp.json()
+        assert m11_docs[0]["match_status"] == "manual"
+        assert m11_docs[0]["linked_vimoga"]["id"] == vimoga_id
+        assert m11_docs[0]["linked_vimoga"]["doc_number"] == "В-200"
+
+        # 404 for unknown M-11 doc
+        resp_nom11 = await client.post(
+            "/api/m11/999999/bind",
+            json={"vimoga_doc_id": vimoga_id},
+        )
+        assert resp_nom11.status == 404
+
+        # 404 for unknown vimoga doc
+        resp_novim = await client.post(
+            f"/api/m11/{m11_id}/bind",
+            json={"vimoga_doc_id": 999999},
+        )
+        assert resp_novim.status == 404
+
+        # 400 for missing vimoga_doc_id
+        resp_bad = await client.post(f"/api/m11/{m11_id}/bind", json={})
+        assert resp_bad.status == 400
+
+        # 400 for non-numeric id
+        resp_bad_id = await client.post("/api/m11/abc/bind", json={"vimoga_doc_id": vimoga_id})
+        assert resp_bad_id.status == 400
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_api_available_vimogas(warehouse_env):
+    """GET /api/m11/available-vimogas returns unlinked first, already-linked below."""
+    db, fs, vs = warehouse_env
+
+    v1_id = db.add_document(
+        filename="v1.pdf", file_type="pdf", doc_type="ВИМОГА", doc_number="В-1", doc_date="2026-03-01"
+    )
+    v2_id = db.add_document(
+        filename="v2.pdf", file_type="pdf", doc_type="ВИМОГА", doc_number="В-2", doc_date="2026-03-02"
+    )
+    m11_id = db.add_document(
+        filename="m11.pdf", file_type="pdf", doc_type="ВИМОГА М-11", doc_number="М11-01"
+    )
+
+    db.add_document_link(
+        m11_doc_id=m11_id,
+        vimoga_doc_id=v2_id,
+        match_status="full",
+        needs_review=0,
+    )
+
+    server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
+    client = TestClient(TestServer(server.app))
+    await client.start_server()
+
+    try:
+        resp = await client.get("/api/m11/available-vimogas")
+        assert resp.status == 200
+        data = await resp.json()
+        assert len(data) == 2
+
+        # First item is unlinked v1
+        assert data[0]["id"] == v1_id
+        assert data[0]["doc_number"] == "В-1"
+        assert data[0]["is_linked"] is False
+        assert data[0]["linked_m11_doc_id"] is None
+
+        # Second item is linked v2
+        assert data[1]["id"] == v2_id
+        assert data[1]["doc_number"] == "В-2"
+        assert data[1]["is_linked"] is True
+        assert data[1]["linked_m11_doc_id"] == m11_id
+        assert data[1]["linked_m11_doc_number"] == "М11-01"
+    finally:
+        await client.close()
+

@@ -1441,4 +1441,113 @@ def test_manual_edit_mark_is_visible_in_documents_and_item_transactions(warehous
     assert warehouse_db.get_item_transactions(item_id)[0]["manual_edited"] is True
 
 
+def test_m11_confirm_and_delete_link(warehouse_db):
+    """confirm_link змінює match_status на 'full' та скидає needs_review, delete_link видаляє запис."""
+    m11_id = warehouse_db.add_document(
+        filename="m11.jpg", file_type="photo", doc_type="ВИМОГА М-11"
+    )
+    vimoga_id = warehouse_db.add_document(
+        filename="vymoga.jpg", file_type="photo", doc_type="ВИМОГА"
+    )
+
+    link_id = warehouse_db.add_document_link(
+        m11_doc_id=m11_id,
+        vimoga_doc_id=vimoga_id,
+        match_status="partial",
+        needs_review=1,
+    )
+
+    # confirm_link
+    assert warehouse_db.confirm_link(link_id) is True
+    link = warehouse_db.get_document_link(link_id)
+    assert link["match_status"] == "full"
+    assert link["needs_review"] == 0
+
+    # confirm nonexistent
+    assert warehouse_db.confirm_link(999999) is False
+
+    # delete_link
+    assert warehouse_db.delete_link(link_id) is True
+    assert warehouse_db.get_document_link(link_id) is None
+    assert warehouse_db.delete_link(link_id) is False
+
+
+def test_m11_create_manual_link(warehouse_db):
+    """create_manual_link створює зв'язок зі статусом 'manual' та замінює попередній зв'язок M-11."""
+    m11_id = warehouse_db.add_document(
+        filename="m11.jpg", file_type="photo", doc_type="ВИМОГА М-11"
+    )
+    vimoga_1 = warehouse_db.add_document(
+        filename="v1.jpg", file_type="photo", doc_type="ВИМОГА"
+    )
+    vimoga_2 = warehouse_db.add_document(
+        filename="v2.jpg", file_type="photo", doc_type="ВИМОГА"
+    )
+
+    link_1 = warehouse_db.create_manual_link(m11_id, vimoga_1)
+    assert link_1 > 0
+    row_1 = warehouse_db.get_document_link(link_1)
+    assert row_1["match_status"] == "manual"
+    assert row_1["needs_review"] == 0
+    assert row_1["vimoga_doc_id"] == vimoga_1
+
+    # Rebind to vimoga_2 replaces existing link for m11_id
+    link_2 = warehouse_db.create_manual_link(m11_id, vimoga_2)
+    assert link_2 > 0
+    assert warehouse_db.get_document_link(link_1) is None
+    row_2 = warehouse_db.get_document_link(link_2)
+    assert row_2["match_status"] == "manual"
+    assert row_2["needs_review"] == 0
+    assert row_2["vimoga_doc_id"] == vimoga_2
+
+
+def test_get_available_vimogas(warehouse_db):
+    """get_available_vimogas повертає лише класичні ВИМОГИ: незв'язані спочатку, зв'язані в кінці."""
+    v1_id = warehouse_db.add_document(
+        filename="v1.pdf", file_type="pdf", doc_type="ВИМОГА", doc_number="В-1"
+    )
+    v2_id = warehouse_db.add_document(
+        filename="v2.pdf", file_type="pdf", doc_type="ВИМОГА", doc_number="В-2"
+    )
+    v3_id = warehouse_db.add_document(
+        filename="v3.pdf", file_type="pdf", doc_type="ВИМОГА", doc_number="В-3"
+    )
+    # Інший тип документа — не повинен потрапляти
+    warehouse_db.add_document(
+        filename="nakl.pdf", file_type="pdf", doc_type="НАКЛАДНА", doc_number="Н-1"
+    )
+
+    m11_id = warehouse_db.add_document(
+        filename="m11.pdf", file_type="pdf", doc_type="ВИМОГА М-11", doc_number="М11-01"
+    )
+
+    # Зв'язуємо v2 з m11
+    warehouse_db.add_document_link(
+        m11_doc_id=m11_id,
+        vimoga_doc_id=v2_id,
+        match_status="full",
+        needs_review=0,
+    )
+
+    available = warehouse_db.get_available_vimogas()
+    assert len(available) == 3
+
+    # Незв'язані спочатку
+    assert available[0]["id"] in (v1_id, v3_id)
+    assert available[0]["is_linked"] is False
+    assert available[0]["link_id"] is None
+    assert available[0]["linked_m11_doc_id"] is None
+
+    assert available[1]["id"] in (v1_id, v3_id)
+    assert available[1]["is_linked"] is False
+
+    # Зв'язана v2 в кінці
+    assert available[2]["id"] == v2_id
+    assert available[2]["is_linked"] is True
+    assert available[2]["link_id"] is not None
+    assert available[2]["linked_m11_doc_id"] == m11_id
+    assert available[2]["linked_m11_doc_number"] == "М11-01"
+
+
+
 

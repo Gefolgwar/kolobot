@@ -1,4 +1,6 @@
 let allM11Docs = [];
+let currentM11BindDocId = null;
+let availableVimogas = [];
 
 function escapeHtml(s) {
     return String(s || '').replace(/[&<>"']/g, m => ({
@@ -16,8 +18,8 @@ function isM11Problematic(doc) {
     if (!doc.linked_vimoga) return true;
     if (doc.match_status === 'none' || doc.match_status === 'unlinked') return true;
     if (doc.match_status === 'partial' || doc.match_status === 'conflict') return true;
-    if (doc.match_status !== 'full') return true;
-    return false;
+    if (doc.match_status === 'full' || doc.match_status === 'manual') return false;
+    return true;
 }
 
 function updateM11Badge(problematicCount) {
@@ -56,6 +58,13 @@ function renderM11Status(doc) {
         return `<span class="inline-flex items-center gap-1.5 text-emerald-400 font-medium" title="Повний збіг">
             <i class="fa-solid fa-check text-base"></i>
             <span>Повний</span>
+        </span>`;
+    }
+
+    if (doc.match_status === 'manual') {
+        return `<span class="inline-flex items-center gap-1.5 text-sky-400 font-medium" title="Зв'язано вручну">
+            <i class="fa-solid fa-link text-xs"></i>
+            <span>Вручну</span>
         </span>`;
     }
 
@@ -113,6 +122,28 @@ function renderM11Table(docs) {
         const statusHtml = renderM11Status(doc);
         const vimogaHtml = renderLinkedVimoga(doc);
 
+        let actionsHtml = `<div class="flex items-center justify-end gap-1.5 flex-wrap">`;
+        if (doc.link_id) {
+            if (doc.needs_review || doc.match_status === 'partial') {
+                actionsHtml += `<button type="button" onclick="event.stopPropagation(); confirmM11Link(${doc.link_id})" class="px-2.5 py-1 text-xs font-medium text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 hover:bg-emerald-500/20 rounded-lg transition flex items-center gap-1 cursor-pointer" title="Підтвердити зв'язок">
+                    <i class="fa-solid fa-check"></i>
+                    <span>Підтвердити</span>
+                </button>`;
+            }
+            actionsHtml += `<button type="button" onclick="event.stopPropagation(); unbindM11Link(${doc.link_id})" class="px-2.5 py-1 text-xs font-medium text-rose-400 bg-rose-500/10 border border-rose-500/30 hover:bg-rose-500/20 rounded-lg transition flex items-center gap-1 cursor-pointer" title="Відв'язати документ">
+                <i class="fa-solid fa-unlink"></i>
+                <span>Відв'язати</span>
+            </button>`;
+        } else {
+            actionsHtml += `<button type="button" onclick="event.stopPropagation(); openBindModal(${doc.id}, '${docNum}')" class="px-2.5 py-1 text-xs font-medium text-sky-400 bg-sky-500/10 border border-sky-500/30 hover:bg-sky-500/20 rounded-lg transition flex items-center gap-1 cursor-pointer" title="Прив'язати до вимоги вручну">
+                <i class="fa-solid fa-link"></i>
+                <span>Прив'язати</span>
+            </button>`;
+        }
+        actionsHtml += `<button type="button" onclick="event.stopPropagation(); viewDocument(${doc.id}, '${escapeHtml(doc.filename || '')}', '${escapeHtml(doc.file_type || '')}')" class="p-1.5 text-slate-400 hover:text-sky-400 hover:bg-sky-500/10 rounded-lg transition" title="Переглянути документ">
+            <i class="fa-solid fa-eye"></i>
+        </button></div>`;
+
         html += `<tr class="hover:bg-slate-800/40 transition cursor-pointer" onclick="viewDocument(${doc.id}, '${escapeHtml(doc.filename || '')}', '${escapeHtml(doc.file_type || '')}')">
             <td class="py-4 px-3 font-medium text-slate-200" data-label="№ М-11">
                 <span class="flex items-center gap-2">
@@ -125,11 +156,7 @@ function renderM11Table(docs) {
             <td class="py-4 px-3 text-blue-400 font-medium" data-label="Позицій">${itemCount}</td>
             <td class="py-4 px-3" data-label="Статус">${statusHtml}</td>
             <td class="py-4 px-3" data-label="Пов'язана ВИМОГА">${vimogaHtml}</td>
-            <td class="py-4 px-3 text-right" data-label="Дії">
-                <button type="button" onclick="event.stopPropagation(); viewDocument(${doc.id}, '${escapeHtml(doc.filename || '')}', '${escapeHtml(doc.file_type || '')}')" class="p-2 text-slate-400 hover:text-sky-400 hover:bg-sky-500/10 rounded-lg transition" title="Переглянути документ">
-                    <i class="fa-solid fa-eye"></i>
-                </button>
-            </td>
+            <td class="py-4 px-3 text-right" data-label="Дії">${actionsHtml}</td>
         </tr>`;
     });
 
@@ -166,6 +193,179 @@ async function fetchM11Docs() {
         filterM11Docs();
     } catch (e) {
         console.error('Fetch M-11 error:', e);
+    }
+}
+
+async function confirmM11Link(linkId) {
+    if (!linkId) return;
+    try {
+        const res = await fetch(`/api/m11/links/${linkId}/confirm`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+        });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            alert(err.error || 'Помилка підтвердження зв\'язку');
+            return;
+        }
+        await fetchM11Docs();
+    } catch (e) {
+        console.error('Error confirming link:', e);
+        alert('Помилка мережі при підтвердженні');
+    }
+}
+
+async function unbindM11Link(linkId) {
+    if (!linkId) return;
+    if (!confirm('Ви дійсно бажаєте відв\'язати цей документ?')) {
+        return;
+    }
+    try {
+        const res = await fetch(`/api/m11/links/${linkId}`, {
+            method: 'DELETE'
+        });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            alert(err.error || 'Помилка видалення зв\'язку');
+            return;
+        }
+        await fetchM11Docs();
+    } catch (e) {
+        console.error('Error deleting link:', e);
+        alert('Помилка мережі при відв\'язанні');
+    }
+}
+
+async function openBindModal(docId, docNum) {
+    currentM11BindDocId = docId;
+    const modal = document.getElementById('m11-bind-modal');
+    const subtitle = document.getElementById('m11-bind-subtitle');
+    const searchInput = document.getElementById('m11-bind-search');
+    if (searchInput) searchInput.value = '';
+    if (subtitle) {
+        subtitle.textContent = (docNum && docNum !== '—')
+            ? `Виберіть відповідну класичну вимогу для М-11 № ${docNum}`
+            : 'Виберіть відповідну класичну вимогу для М-11';
+    }
+    if (modal) modal.classList.remove('hidden');
+
+    const listEl = document.getElementById('m11-bind-list');
+    if (listEl) {
+        listEl.innerHTML = '<div class="py-12 text-center text-slate-500"><i class="fa-solid fa-spinner fa-spin text-2xl mb-2 block text-sky-400"></i>Завантаження вимог...</div>';
+    }
+
+    try {
+        const res = await fetch('/api/m11/available-vimogas');
+        if (!res.ok) {
+            if (listEl) listEl.innerHTML = '<div class="py-12 text-center text-rose-400"><i class="fa-solid fa-circle-exclamation text-2xl mb-2 block"></i>Помилка завантаження вимог</div>';
+            return;
+        }
+        availableVimogas = await res.json();
+        renderAvailableVimogas(availableVimogas);
+    } catch (e) {
+        console.error('Error fetching available vimogas:', e);
+        if (listEl) listEl.innerHTML = '<div class="py-12 text-center text-rose-400"><i class="fa-solid fa-circle-exclamation text-2xl mb-2 block"></i>Помилка завантаження вимог</div>';
+    }
+}
+
+function closeBindModal() {
+    currentM11BindDocId = null;
+    const modal = document.getElementById('m11-bind-modal');
+    if (modal) modal.classList.add('hidden');
+}
+
+function filterAvailableVimogas() {
+    const q = (document.getElementById('m11-bind-search')?.value || '').toLowerCase().trim();
+    if (!q) {
+        renderAvailableVimogas(availableVimogas);
+        return;
+    }
+    const filtered = availableVimogas.filter(v => {
+        const num = (v.doc_number || '').toLowerCase();
+        const dt = (v.doc_date || '').toLowerCase();
+        const fn = (v.filename || '').toLowerCase();
+        const req = (v.requested_by || '').toLowerCase();
+        return num.includes(q) || dt.includes(q) || fn.includes(q) || req.includes(q);
+    });
+    renderAvailableVimogas(filtered);
+}
+
+function renderAvailableVimogas(list) {
+    const listEl = document.getElementById('m11-bind-list');
+    if (!listEl) return;
+    if (!list || list.length === 0) {
+        listEl.innerHTML = '<div class="py-12 text-center text-slate-500"><i class="fa-solid fa-file-lines text-2xl mb-2 block text-slate-600"></i>Вимог не знайдено</div>';
+        return;
+    }
+
+    let html = '';
+    list.forEach(v => {
+        const vNum = escapeHtml(v.doc_number || 'б/н');
+        const vDate = escapeHtml(v.doc_date || '');
+        const fn = escapeHtml(v.filename || '');
+        const req = escapeHtml(v.requested_by || '');
+
+        if (v.is_linked) {
+            const m11Num = escapeHtml(v.linked_m11_doc_number || '');
+            const m11Suffix = m11Num ? ` (№ ${m11Num})` : '';
+            html += `<div class="p-3 bg-slate-900/30 border border-slate-800/60 rounded-xl flex items-center justify-between opacity-50 cursor-not-allowed gap-3">
+                <div class="flex items-center gap-3 min-w-0">
+                    <div class="w-8 h-8 rounded-lg bg-slate-800 text-slate-500 flex items-center justify-center shrink-0">
+                        <i class="fa-solid fa-file-lines text-sm"></i>
+                    </div>
+                    <div class="min-w-0">
+                        <div class="font-medium text-slate-400 flex items-center gap-2 flex-wrap">
+                            <span>№ ${vNum}</span>
+                            ${vDate ? `<span class="text-xs text-slate-500">(${vDate})</span>` : ''}
+                            <span class="px-2 py-0.5 rounded bg-slate-800 text-slate-400 text-xs border border-slate-700">вже має М-11${m11Suffix}</span>
+                        </div>
+                        <div class="text-xs text-slate-600 break-words">${req || fn}</div>
+                    </div>
+                </div>
+                <span class="shrink-0 text-xs text-slate-600 px-3 py-1.5 font-medium">Прив'язано</span>
+            </div>`;
+        } else {
+            html += `<div class="p-3 bg-slate-900/60 hover:bg-slate-800/70 border border-slate-800 hover:border-sky-500/40 rounded-xl flex items-center justify-between transition gap-3">
+                <div class="flex items-center gap-3 min-w-0">
+                    <div class="w-8 h-8 rounded-lg bg-sky-500/10 text-sky-400 flex items-center justify-center shrink-0">
+                        <i class="fa-solid fa-file-lines text-sm"></i>
+                    </div>
+                    <div class="min-w-0">
+                        <div class="font-medium text-slate-200 flex items-center gap-2 flex-wrap">
+                            <span>№ ${vNum}</span>
+                            ${vDate ? `<span class="text-xs text-slate-400">(${vDate})</span>` : ''}
+                        </div>
+                        <div class="text-xs text-slate-500 break-words">${req || fn}</div>
+                    </div>
+                </div>
+                <button type="button" onclick="selectVimogaForBind(${v.id})" class="shrink-0 px-3 py-1.5 bg-sky-600 hover:bg-sky-500 text-white text-xs font-medium rounded-lg transition shadow-sm cursor-pointer flex items-center gap-1.5">
+                    <i class="fa-solid fa-link text-xs"></i>
+                    <span>Вибрати</span>
+                </button>
+            </div>`;
+        }
+    });
+    listEl.innerHTML = html;
+}
+
+async function selectVimogaForBind(vimogaDocId) {
+    if (!currentM11BindDocId || !vimogaDocId) return;
+    try {
+        const res = await fetch(`/api/m11/${currentM11BindDocId}/bind`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ vimoga_doc_id: vimogaDocId })
+        });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            alert(err.error || 'Помилка прив\'язки документа');
+            return;
+        }
+        closeBindModal();
+        await fetchM11Docs();
+    } catch (e) {
+        console.error('Error binding document:', e);
+        alert('Помилка мережі при прив\'язці');
     }
 }
 

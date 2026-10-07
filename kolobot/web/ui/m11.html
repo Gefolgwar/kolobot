@@ -41,3 +41,43 @@
             </div>
         </div>
     </main>
+
+    <!-- M-11 Manual Bind Modal -->
+    <div id="m11-bind-modal" class="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm hidden flex items-center justify-center p-4">
+        <div class="glass w-full max-w-2xl max-h-[90vh] rounded-2xl flex flex-col border border-slate-700 shadow-2xl overflow-hidden">
+            <div class="px-6 py-4 border-b border-slate-800 flex items-center justify-between">
+                <div class="flex items-center gap-2.5">
+                    <div class="w-9 h-9 rounded-xl bg-sky-500/10 text-sky-400 flex items-center justify-center border border-sky-500/20">
+                        <i class="fa-solid fa-link"></i>
+                    </div>
+                    <div>
+                        <h3 class="font-bold text-base text-slate-100">Прив'язати ВИМОГУ до М-11</h3>
+                        <p id="m11-bind-subtitle" class="text-xs text-slate-400">Виберіть відповідну класичну вимогу для М-11</p>
+                    </div>
+                </div>
+                <button type="button" onclick="closeBindModal()" class="text-slate-400 hover:text-white p-1.5 rounded-lg transition" title="Закрити">
+                    <i class="fa-solid fa-xmark text-lg"></i>
+                </button>
+            </div>
+
+            <!-- Search and Filter in Modal -->
+            <div class="p-4 border-b border-slate-800 bg-slate-900/50">
+                <div class="relative">
+                    <i class="fa-solid fa-magnifying-glass absolute left-3.5 top-3 text-slate-500 text-sm"></i>
+                    <input type="text" id="m11-bind-search" onkeyup="filterAvailableVimogas()" placeholder="Пошук за номером або датою..."
+                        class="w-full bg-slate-900 text-sm text-slate-200 pl-10 pr-4 py-2 rounded-xl border border-slate-700 focus:outline-none focus:border-sky-500 transition">
+                </div>
+            </div>
+
+            <!-- List of available vimogas -->
+            <div id="m11-bind-list" class="flex-1 overflow-y-auto p-4 space-y-2 text-sm divide-y divide-slate-800/40 min-h-[250px] max-h-[450px]">
+                <!-- Dynamically populated -->
+            </div>
+
+            <div class="px-6 py-3 border-t border-slate-800 flex items-center justify-end bg-slate-900/40">
+                <button type="button" onclick="closeBindModal()" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-medium rounded-xl transition">
+                    Скасувати
+                </button>
+            </div>
+        </div>
+    </div>
