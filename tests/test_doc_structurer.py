@@ -210,6 +210,30 @@ def test_normalize_doc_type_vymoha_and_nakladna():
     assert normalize_doc_type(doc_type="note") == "note"
 
 
+def test_normalize_doc_type_m11():
+    from kolobot.doc_structurer import normalize_doc_type
+
+    # M-11 detection with various formatting in raw_text
+    assert normalize_doc_type(raw_text="Типова форма № М-11\nНАКЛАДНА-ВИМОГА") == "вимога м-11"
+    assert normalize_doc_type(raw_text="типова форма № м-11") == "вимога м-11"
+    assert normalize_doc_type(raw_text="ТИПОВА ФОРМА М-11") == "вимога м-11"
+    assert normalize_doc_type(raw_text="Типова форма  №  М-11") == "вимога м-11"
+    assert normalize_doc_type(raw_text="типова форма м 11") == "вимога м-11"
+    assert normalize_doc_type(raw_text="Типова форма № м - 11") == "вимога м-11"
+    assert normalize_doc_type(raw_text="ТИПОВА ФОРМА № М11") == "вимога м-11"
+
+    # M-11 takes priority over header keywords like вимога / накладна
+    m11_with_vymoha_header = "ВИМОГА НА ВІДПУСК\nТипова форма № М-11\nРядок 1"
+    assert normalize_doc_type(raw_text=m11_with_vymoha_header) == "вимога м-11"
+
+    m11_with_nakladna_header = "НАКЛАДНА № 5\nТипова форма № М-11\nРядок 1"
+    assert normalize_doc_type(raw_text=m11_with_nakladna_header) == "вимога м-11"
+
+    # Explicit doc_type / title
+    assert normalize_doc_type(doc_type="вимога м-11") == "вимога м-11"
+    assert normalize_doc_type(title="Типова форма № М-11") == "вимога м-11"
+
+
 def test_parse_vymoha_document_exact_user_case():
     json_str = json.dumps({
         "doc_type": "invoice",

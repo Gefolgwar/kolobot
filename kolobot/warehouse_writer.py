@@ -20,14 +20,23 @@ from kolobot.warehouse_db import WarehouseDB
 def _detect_doc_type_and_op(doc: Any) -> tuple[str, str]:
     """
     Returns (doc_type_label, default_op).
-    doc_type_label: 'ВИМОГА', 'НАКЛАДНА', or custom uppercase string.
+    doc_type_label: 'ВИМОГА М-11', 'ВИМОГА', 'НАКЛАДНА', or custom uppercase string.
     default_op: 'expense', 'income', or ''.
     """
     raw_doc_type = (getattr(doc, "doc_type", "") or "").strip().lower()
     title = (getattr(doc, "title", "") or "").strip().lower()
     summary = (getattr(doc, "summary", "") or "").strip().lower()
-    raw_text = (getattr(doc, "raw_text", "") or "").strip().lower()
-    header_lines = "\n".join(raw_text.splitlines()[:5])
+    raw_text = (getattr(doc, "raw_text", "") or "").strip()
+
+    # Priority 0: M-11 detection before existing ВИМОГА/НАКЛАДНА checks
+    if (
+        re.search(r"типова\s+форма\s*№?\s*м[\s-]*11", raw_text, re.IGNORECASE)
+        or re.search(r"типова\s+форма\s*№?\s*м[\s-]*11", title, re.IGNORECASE)
+        or raw_doc_type in ("вимога м-11", "м-11")
+    ):
+        return "ВИМОГА М-11", ""
+
+    header_lines = "\n".join(raw_text.lower().splitlines()[:5])
 
     # Priority 1: Check header lines of raw text for clear printed document title
     if re.search(r"\bвимога\b", header_lines) or re.search(r"\bакт\s+списанн", header_lines):
@@ -114,6 +123,7 @@ def _save_to_warehouse(
         # щоб прихід не подвоївся. Обидва записи йдуть однією транзакцією БД.
         # Позначку ручного редагування скидаємо: значення документа знову машинні.
         wdb.clear_document_transactions(existing_doc_id)
+        wdb.delete_m11_items_by_document(existing_doc_id)
         wdb.update_document(
             existing_doc_id,
             filename=file_name,
@@ -144,6 +154,63 @@ def _save_to_warehouse(
         )
 
     items_list = getattr(doc, "items", []) or []
+
+    if doc_type_label == "ВИМОГА М-11":
+        m11_count = 0
+        if items_list:
+            for it in items_list:
+                name = it.get("name", "").strip() if isinstance(it, dict) else getattr(it, "name", "").strip()
+                if not name:
+                    continue
+                qty_raw = it.get("quantity", "") if isinstance(it, dict) else getattr(it, "quantity", "")
+                qty_str = str(qty_raw or "").strip().replace(" ", "").replace(",", ".")
+                try:
+                    qty = float(qty_str) if qty_str else 0.0
+                except ValueError:
+                    qty = 0.0
+                unit = str((it.get("unit", "") if isinstance(it, dict) else getattr(it, "unit", "")) or "").strip()
+                sku = str((it.get("nomenclature_number", "") if isinstance(it, dict) else getattr(it, "nomenclature_number", "")) or "").strip()
+                wdb.add_m11_item(
+                    document_id=wh_doc_id,
+                    name=name,
+                    quantity=qty,
+                    unit=unit,
+                    nomenclature_number=sku,
+                )
+                m11_count += 1
+        elif getattr(doc, "item_name", ""):
+            name = doc.item_name.strip()
+            if name:
+                qty_raw = getattr(doc, "quantity", None)
+                if qty_raw is None:
+                    inc = getattr(doc, "incoming", "") or ""
+                    out = getattr(doc, "outgoing", "") or ""
+                    qty_str = str(inc or out or "").strip().replace(" ", "").replace(",", ".")
+                else:
+                    qty_str = str(qty_raw).strip().replace(" ", "").replace(",", ".")
+                try:
+                    qty = float(qty_str) if qty_str else 0.0
+                except ValueError:
+                    qty = 0.0
+                unit = getattr(doc, "unit", "") or ""
+                sku = str(getattr(doc, "nomenclature_number", "") or "").strip()
+                wdb.add_m11_item(
+                    document_id=wh_doc_id,
+                    name=name,
+                    quantity=qty,
+                    unit=unit,
+                    nomenclature_number=sku,
+                )
+                m11_count += 1
+
+        parts = []
+        if m11_count:
+            parts.append(f"{m11_count} позицій М-11")
+        summary = "📋 Вимога М-11: " + ", ".join(parts) + "." if parts else "📋 Вимога М-11 збережена."
+        saved_doc = wdb.get_document(wh_doc_id)
+        notice = unaccounted_notice_uk(saved_doc) if saved_doc else ""
+        return "\n\n".join(block for block in (summary, notice) if block)
+
     created = 0
     updated = 0
     txs = 0

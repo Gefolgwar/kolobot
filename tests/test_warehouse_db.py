@@ -817,6 +817,239 @@ def test_running_balance_skips_unaccounted_rows_and_matches_item_balance(warehou
     assert txs[-1]["running_balance"] == item["balance"] == 6.0
 
 
+def test_m11_tables_and_schema_created_on_startup(warehouse_db):
+    """Таблиці m11_items та document_links створюються при старті з правильними схемами."""
+    # Перевірка m11_items
+    cur = warehouse_db._conn.execute("PRAGMA table_info(m11_items)")
+    cols = {row["name"]: row["type"].upper() for row in cur.fetchall()}
+    assert "id" in cols
+    assert "document_id" in cols
+    assert "name" in cols
+    assert "quantity" in cols
+    assert "unit" in cols
+    assert "nomenclature_number" in cols
+
+    # Перевірка document_links
+    cur = warehouse_db._conn.execute("PRAGMA table_info(document_links)")
+    link_cols = {row["name"]: row["type"].upper() for row in cur.fetchall()}
+    assert "id" in link_cols
+    assert "m11_doc_id" in link_cols
+    assert "vimoga_doc_id" in link_cols
+    assert "match_status" in link_cols
+    assert "needs_review" in link_cols
+    assert "created_at" in link_cols
+
+    # Перевірка відсутності UNIQUE констрейнтів на document_links
+    cur = warehouse_db._conn.execute("PRAGMA index_list(document_links)")
+    indexes = cur.fetchall()
+    unique_indexes = [idx for idx in indexes if idx["unique"] == 1]
+    # Тільки PRIMARY KEY на id може бути унікальним індексом
+    for uidx in unique_indexes:
+        cur_info = warehouse_db._conn.execute(f"PRAGMA index_info({uidx['name']})")
+        idx_cols = [r["name"] for r in cur_info.fetchall()]
+        assert "m11_doc_id" not in idx_cols
+        assert "vimoga_doc_id" not in idx_cols
+
+
+def test_m11_items_crud(warehouse_db):
+    """Перевірка CRUD операцій над таблицею m11_items."""
+    doc_id = warehouse_db.add_document(
+        filename="m11_001.jpg",
+        file_type="photo",
+        doc_type="ВИМОГА М-11",
+        doc_number="12",
+        doc_date="10.08.2026",
+    )
+
+    # 1. Create
+    item_id = warehouse_db.add_m11_item(
+        document_id=doc_id,
+        name="Труба сталева 20х2",
+        quantity=15.5,
+        unit="м",
+        nomenclature_number="100234",
+    )
+    assert item_id > 0
+
+    # 2. Read single
+    item = warehouse_db.get_m11_item(item_id)
+    assert item is not None
+    assert item["id"] == item_id
+    assert item["document_id"] == doc_id
+    assert item["name"] == "Труба сталева 20х2"
+    assert item["quantity"] == 15.5
+    assert item["unit"] == "м"
+    assert item["nomenclature_number"] == "100234"
+
+    # 3. Read list / by document
+    items = warehouse_db.get_m11_items_by_document(doc_id)
+    assert len(items) == 1
+    assert items[0]["name"] == "Труба сталева 20х2"
+
+    items_all = warehouse_db.get_m11_items(document_id=doc_id)
+    assert len(items_all) == 1
+
+    # 4. Update
+    updated = warehouse_db.update_m11_item(
+        item_id,
+        name="Труба сталева 20х2.5",
+        quantity=18.0,
+    )
+    assert updated is True
+    item_after = warehouse_db.get_m11_item(item_id)
+    assert item_after["name"] == "Труба сталева 20х2.5"
+    assert item_after["quantity"] == 18.0
+
+    # 5. Delete single
+    deleted = warehouse_db.delete_m11_item(item_id)
+    assert deleted is True
+    assert warehouse_db.get_m11_item(item_id) is None
+
+    # Delete by document
+    id2 = warehouse_db.add_m11_item(document_id=doc_id, name="Муфта 20", quantity=3.0)
+    id3 = warehouse_db.add_m11_item(document_id=doc_id, name="Кутник 20", quantity=4.0)
+    assert len(warehouse_db.get_m11_items_by_document(doc_id)) == 2
+    count_deleted = warehouse_db.delete_m11_items_by_document(doc_id)
+    assert count_deleted == 2
+    assert len(warehouse_db.get_m11_items_by_document(doc_id)) == 0
+
+
+def test_document_links_crud_and_no_unique_constraint(warehouse_db):
+    """Перевірка CRUD операцій над document_links та можливості створювати декілька зв'язків."""
+    m11_id = warehouse_db.add_document(
+        filename="m11.jpg", file_type="photo", doc_type="ВИМОГА М-11"
+    )
+    vymoga_id = warehouse_db.add_document(
+        filename="vymoga.jpg", file_type="photo", doc_type="ВИМОГА"
+    )
+
+    # 1. Create
+    link_id_1 = warehouse_db.add_document_link(
+        m11_doc_id=m11_id,
+        vimoga_doc_id=vymoga_id,
+        match_status="full",
+        needs_review=0,
+    )
+    assert link_id_1 > 0
+
+    # 2. Duplicate link creation (no UNIQUE constraint!)
+    link_id_2 = warehouse_db.add_document_link(
+        m11_doc_id=m11_id,
+        vimoga_doc_id=vymoga_id,
+        match_status="partial",
+        needs_review=1,
+    )
+    assert link_id_2 > link_id_1
+
+    # 3. Read
+    link = warehouse_db.get_document_link(link_id_1)
+    assert link is not None
+    assert link["m11_doc_id"] == m11_id
+    assert link["vimoga_doc_id"] == vymoga_id
+    assert link["match_status"] == "full"
+    assert link["needs_review"] == 0
+
+    # Filters
+    links_for_m11 = warehouse_db.get_document_links_for_m11(m11_id)
+    assert len(links_for_m11) == 2
+    links_for_vimoga = warehouse_db.get_document_links_for_vimoga(vymoga_id)
+    assert len(links_for_vimoga) == 2
+
+    # 4. Update
+    updated = warehouse_db.update_document_link(
+        link_id_1,
+        match_status="manual",
+        needs_review=0,
+    )
+    assert updated is True
+    assert warehouse_db.get_document_link(link_id_1)["match_status"] == "manual"
+
+    # 5. Delete single
+    deleted = warehouse_db.delete_document_link(link_id_2)
+    assert deleted is True
+    assert warehouse_db.get_document_link(link_id_2) is None
+
+    # Delete by document
+    del_count = warehouse_db.delete_document_links_by_document(m11_id)
+    assert del_count == 1
+    assert len(warehouse_db.get_document_links_for_m11(m11_id)) == 0
+
+
+def test_m11_and_links_cascade_delete_on_document_deletion(warehouse_db):
+    """Видалення документа каскадно видаляє m11_items та document_links."""
+    m11_id = warehouse_db.add_document(
+        filename="m11.jpg", file_type="photo", doc_type="ВИМОГА М-11"
+    )
+    vymoga_id = warehouse_db.add_document(
+        filename="vymoga.jpg", file_type="photo", doc_type="ВИМОГА"
+    )
+
+    item_id = warehouse_db.add_m11_item(document_id=m11_id, name="Кабель", quantity=100.0)
+    link_id = warehouse_db.add_document_link(m11_doc_id=m11_id, vimoga_doc_id=vymoga_id)
+
+    assert warehouse_db.get_m11_item(item_id) is not None
+    assert warehouse_db.get_document_link(link_id) is not None
+
+    # Delete m11 document
+    warehouse_db.delete_document(m11_id)
+
+    assert warehouse_db.get_m11_item(item_id) is None
+    assert warehouse_db.get_document_link(link_id) is None
+
+
+def test_m11_migration_on_existing_database(tmp_path):
+    """Міграція створює таблиці m11_items та document_links у вже існуючій базі."""
+    db_path = str(tmp_path / "legacy.db")
+    # Створюємо стару схему без m11 таблиць
+    conn = sqlite3.connect(db_path)
+    conn.executescript("""
+        CREATE TABLE documents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            filename TEXT NOT NULL,
+            file_type TEXT NOT NULL,
+            file_path TEXT NOT NULL DEFAULT '',
+            uploaded_at REAL NOT NULL,
+            doc_number TEXT NOT NULL DEFAULT '',
+            doc_date TEXT NOT NULL DEFAULT '',
+            raw_text TEXT NOT NULL DEFAULT '',
+            doc_type TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'completed',
+            error_message TEXT NOT NULL DEFAULT ''
+        );
+        CREATE TABLE warehouse_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sku TEXT NOT NULL DEFAULT '',
+            name TEXT NOT NULL,
+            unit TEXT NOT NULL DEFAULT ''
+        );
+        CREATE TABLE warehouse_transactions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            item_id INTEGER NOT NULL,
+            document_id INTEGER NOT NULL,
+            operation_type TEXT NOT NULL,
+            quantity REAL NOT NULL DEFAULT 0,
+            doc_number TEXT NOT NULL DEFAULT '',
+            doc_date TEXT NOT NULL DEFAULT '',
+            created_at REAL NOT NULL
+        );
+    """)
+    conn.commit()
+    conn.close()
+
+    # Відкриваємо через WarehouseDB, що викличе _migrate()
+    db = WarehouseDB(db_path=db_path)
+    db.init_db()
+
+    # Перевіряємо, що таблиці створено
+    cur = db._conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='m11_items'")
+    assert cur.fetchone() is not None
+
+    cur = db._conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='document_links'")
+    assert cur.fetchone() is not None
+    db.close()
+
+
+
 def test_filling_a_field_returns_document_to_accounting_without_extra_actions(warehouse_db):
     """Дозаповнення поля прямо в базі повертає документ в облік; стирання — виводить."""
     item_id = warehouse_db.add_item(name="Болт М8", sku="SKU-001", unit="шт")

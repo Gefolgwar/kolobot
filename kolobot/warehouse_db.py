@@ -111,14 +111,58 @@ class WarehouseDB:
                 source_row TEXT NOT NULL DEFAULT ''
             );
 
+            CREATE TABLE IF NOT EXISTS m11_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+                name TEXT NOT NULL,
+                quantity REAL NOT NULL DEFAULT 0,
+                unit TEXT NOT NULL DEFAULT '',
+                nomenclature_number TEXT NOT NULL DEFAULT ''
+            );
+
+            CREATE TABLE IF NOT EXISTS document_links (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                m11_doc_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+                vimoga_doc_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+                match_status TEXT NOT NULL DEFAULT 'none',
+                needs_review INTEGER NOT NULL DEFAULT 0,
+                created_at REAL NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_transactions_item ON warehouse_transactions(item_id);
             CREATE INDEX IF NOT EXISTS idx_transactions_doc ON warehouse_transactions(document_id);
             CREATE INDEX IF NOT EXISTS idx_items_sku ON warehouse_items(sku);
+            CREATE INDEX IF NOT EXISTS idx_m11_items_doc ON m11_items(document_id);
+            CREATE INDEX IF NOT EXISTS idx_doc_links_m11 ON document_links(m11_doc_id);
+            CREATE INDEX IF NOT EXISTS idx_doc_links_vimoga ON document_links(vimoga_doc_id);
         """)
         self._conn.commit()
         self._migrate()
 
     def _migrate(self) -> None:
+        self._conn.executescript("""
+            CREATE TABLE IF NOT EXISTS m11_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+                name TEXT NOT NULL,
+                quantity REAL NOT NULL DEFAULT 0,
+                unit TEXT NOT NULL DEFAULT '',
+                nomenclature_number TEXT NOT NULL DEFAULT ''
+            );
+
+            CREATE TABLE IF NOT EXISTS document_links (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                m11_doc_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+                vimoga_doc_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+                match_status TEXT NOT NULL DEFAULT 'none',
+                needs_review INTEGER NOT NULL DEFAULT 0,
+                created_at REAL NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_m11_items_doc ON m11_items(document_id);
+            CREATE INDEX IF NOT EXISTS idx_doc_links_m11 ON document_links(m11_doc_id);
+            CREATE INDEX IF NOT EXISTS idx_doc_links_vimoga ON document_links(vimoga_doc_id);
+        """)
         cursor = self._conn.execute("PRAGMA table_info(documents)")
         doc_cols = {row[1] for row in cursor.fetchall()}
         if "doc_type" not in doc_cols:
@@ -647,6 +691,8 @@ class WarehouseDB:
         if not row:
             return False
         self.clear_document_transactions(doc_id)
+        self.delete_m11_items_by_document(doc_id)
+        self.delete_document_links_by_document(doc_id)
         self._conn.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
         self._cleanup_orphan_items()
         self._conn.commit()
@@ -657,3 +703,141 @@ class WarehouseDB:
             DELETE FROM warehouse_items
             WHERE id NOT IN (SELECT DISTINCT item_id FROM warehouse_transactions)
         """)
+
+    def add_m11_item(
+        self,
+        document_id: int,
+        name: str,
+        quantity: float = 0.0,
+        unit: str = "",
+        nomenclature_number: str = "",
+    ) -> int:
+        cur = self._conn.execute(
+            "INSERT INTO m11_items (document_id, name, quantity, unit, nomenclature_number) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (document_id, name, quantity, unit, nomenclature_number),
+        )
+        self._conn.commit()
+        return cur.lastrowid
+
+    def get_m11_item(self, item_id: int) -> Optional[Dict[str, Any]]:
+        row = self._conn.execute(
+            "SELECT * FROM m11_items WHERE id = ?", (item_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def get_m11_items(self, document_id: Optional[int] = None) -> List[Dict[str, Any]]:
+        if document_id is not None:
+            rows = self._conn.execute(
+                "SELECT * FROM m11_items WHERE document_id = ? ORDER BY id ASC",
+                (document_id,),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT * FROM m11_items ORDER BY id ASC"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_m11_items_by_document(self, document_id: int) -> List[Dict[str, Any]]:
+        return self.get_m11_items(document_id=document_id)
+
+    def update_m11_item(self, item_id: int, **kwargs: Any) -> bool:
+        allowed = {"document_id", "name", "quantity", "unit", "nomenclature_number"}
+        updates = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
+        if not updates:
+            return False
+        row = self._conn.execute("SELECT id FROM m11_items WHERE id = ?", (item_id,)).fetchone()
+        if not row:
+            return False
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        values = list(updates.values()) + [item_id]
+        self._conn.execute(f"UPDATE m11_items SET {set_clause} WHERE id = ?", values)
+        self._conn.commit()
+        return True
+
+    def delete_m11_item(self, item_id: int) -> bool:
+        cur = self._conn.execute("DELETE FROM m11_items WHERE id = ?", (item_id,))
+        self._conn.commit()
+        return cur.rowcount > 0
+
+    def delete_m11_items_by_document(self, document_id: int) -> int:
+        cur = self._conn.execute("DELETE FROM m11_items WHERE document_id = ?", (document_id,))
+        self._conn.commit()
+        return cur.rowcount
+
+    def add_document_link(
+        self,
+        m11_doc_id: int,
+        vimoga_doc_id: int,
+        match_status: str = "none",
+        needs_review: int = 0,
+        created_at: Optional[float] = None,
+    ) -> int:
+        if created_at is None:
+            created_at = time.time()
+        cur = self._conn.execute(
+            "INSERT INTO document_links (m11_doc_id, vimoga_doc_id, match_status, needs_review, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (m11_doc_id, vimoga_doc_id, match_status, int(needs_review), created_at),
+        )
+        self._conn.commit()
+        return cur.lastrowid
+
+    def get_document_link(self, link_id: int) -> Optional[Dict[str, Any]]:
+        row = self._conn.execute(
+            "SELECT * FROM document_links WHERE id = ?", (link_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def get_document_links(
+        self,
+        m11_doc_id: Optional[int] = None,
+        vimoga_doc_id: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        query = "SELECT * FROM document_links"
+        clauses = []
+        params = []
+        if m11_doc_id is not None:
+            clauses.append("m11_doc_id = ?")
+            params.append(m11_doc_id)
+        if vimoga_doc_id is not None:
+            clauses.append("vimoga_doc_id = ?")
+            params.append(vimoga_doc_id)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY id ASC"
+        rows = self._conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_document_links_for_m11(self, m11_doc_id: int) -> List[Dict[str, Any]]:
+        return self.get_document_links(m11_doc_id=m11_doc_id)
+
+    def get_document_links_for_vimoga(self, vimoga_doc_id: int) -> List[Dict[str, Any]]:
+        return self.get_document_links(vimoga_doc_id=vimoga_doc_id)
+
+    def update_document_link(self, link_id: int, **kwargs: Any) -> bool:
+        allowed = {"m11_doc_id", "vimoga_doc_id", "match_status", "needs_review", "created_at"}
+        updates = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
+        if not updates:
+            return False
+        row = self._conn.execute("SELECT id FROM document_links WHERE id = ?", (link_id,)).fetchone()
+        if not row:
+            return False
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        values = list(updates.values()) + [link_id]
+        self._conn.execute(f"UPDATE document_links SET {set_clause} WHERE id = ?", values)
+        self._conn.commit()
+        return True
+
+    def delete_document_link(self, link_id: int) -> bool:
+        cur = self._conn.execute("DELETE FROM document_links WHERE id = ?", (link_id,))
+        self._conn.commit()
+        return cur.rowcount > 0
+
+    def delete_document_links_by_document(self, doc_id: int) -> int:
+        cur = self._conn.execute(
+            "DELETE FROM document_links WHERE m11_doc_id = ? OR vimoga_doc_id = ?",
+            (doc_id, doc_id),
+        )
+        self._conn.commit()
+        return cur.rowcount

@@ -75,13 +75,22 @@ def normalize_doc_type(
     raw_text: str = "",
 ) -> str:
     """
-    Normalize document type to 'вимога', 'накладна', or original type.
+    Normalize document type to 'вимога м-11', 'вимога', 'накладна', or original type.
     Determined strictly by the printed header/title of the document.
     """
     dt_lower = (doc_type or "").strip().lower()
     title_lower = (title or "").strip().lower()
     summary_lower = (summary or "").strip().lower()
     text_lower = (raw_text or "").strip().lower()
+
+    # Priority 0: Check M-11 in full raw text or explicit doc_type (before вимога/накладна rules)
+    if (
+        re.search(r"типова\s+форма\s*№?\s*м[\s-]*11", raw_text or "", re.IGNORECASE)
+        or re.search(r"типова\s+форма\s*№?\s*м[\s-]*11", title or "", re.IGNORECASE)
+        or dt_lower in ("вимога м-11", "м-11")
+    ):
+        return "вимога м-11"
+
     header_lines = "\n".join(text_lower.splitlines()[:5])
 
     # Priority 1: Check header lines of raw text (top of document)
