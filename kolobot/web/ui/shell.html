@@ -45,13 +45,14 @@
                 <i class="fa-solid fa-boxes-stacked mr-1"></i> Склад
                 <span id="items-count" class="ml-1 px-2 py-0.5 bg-slate-800 text-blue-400 rounded-full text-xs">0</span>
             </button>
-            <button id="tab-documents" onclick="switchTab('documents')" class="pb-3 px-1 text-sm font-semibold tab-inactive transition">
+            <button id="tab-documents" onclick="switchTab('documents')" class="pb-3 px-1 text-sm font-semibold tab-inactive transition flex items-center">
                 <i class="fa-solid fa-file-lines mr-1"></i> Документи
                 <span id="docs-count" class="ml-1 px-2 py-0.5 bg-slate-800 text-slate-400 rounded-full text-xs">0</span>
+                <span id="docs-vimoga-badge" class="ml-1.5 px-2 py-0.5 bg-slate-800 text-slate-400 rounded-full text-xs font-mono" title="Вимоги: всього / незв'язані"><span class="text-slate-400">0</span><span class="text-slate-500">/</span><span class="text-slate-500">0</span></span>
             </button>
             <button id="tab-m11" onclick="switchTab('m11')" class="pb-3 px-1 text-sm font-semibold tab-inactive transition flex items-center">
                 <i class="fa-solid fa-file-invoice mr-1.5 text-xs"></i> Вимоги М-11
-                <span id="m11-badge" class="ml-1.5 px-2 py-0.5 bg-slate-800 text-slate-500 rounded-full text-xs font-mono">0</span>
+                <span id="m11-badge" class="ml-1.5 px-2 py-0.5 bg-slate-800 text-slate-400 rounded-full text-xs font-mono" title="М-11: всього / незв'язані"><span class="text-slate-400">0</span><span class="text-slate-500">/</span><span class="text-slate-500">0</span></span>
             </button>
             <button id="tab-logs" onclick="switchTab('logs')" class="pb-3 px-1 text-sm font-semibold tab-inactive transition flex items-center">
                 <i class="fa-solid fa-terminal mr-1.5 text-xs"></i> Log

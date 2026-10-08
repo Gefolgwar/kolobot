@@ -22,26 +22,92 @@ function isM11Problematic(doc) {
     return true;
 }
 
+function isM11DocLinked(doc) {
+    if (!doc) return false;
+    if (doc.linked_vimoga && (doc.linked_vimoga.id !== undefined || doc.linked_vimoga.doc_id !== undefined || doc.linked_vimoga.number || doc.linked_vimoga.doc_number)) {
+        return true;
+    }
+    if (doc.link_id && doc.match_status !== 'none' && doc.match_status !== 'unlinked') {
+        return true;
+    }
+    if (doc.link_id) {
+        return true;
+    }
+    return false;
+}
+
 function updateM11Badge(problematicCount) {
     const badge = document.getElementById('m11-badge');
     const problemEl = document.getElementById('problem-m11-count');
     const totalEl = document.getElementById('total-m11-count');
 
-    const count = (typeof problematicCount === 'number')
+    const probCount = (typeof problematicCount === 'number')
         ? problematicCount
-        : allM11Docs.filter(isM11Problematic).length;
+        : (typeof allM11Docs !== 'undefined' && Array.isArray(allM11Docs) ? allM11Docs.filter(isM11Problematic).length : 0);
 
-    if (totalEl) totalEl.textContent = allM11Docs.length;
-    if (problemEl) problemEl.textContent = count;
+    const m11List = (typeof allM11Docs !== 'undefined' && Array.isArray(allM11Docs)) ? allM11Docs : [];
+    if (totalEl) totalEl.textContent = m11List.length;
+    if (problemEl) problemEl.textContent = probCount;
 
     if (badge) {
-        badge.textContent = count;
-        if (count > 0) {
-            badge.className = 'ml-1.5 px-2 py-0.5 bg-rose-500/20 text-rose-400 border border-rose-500/30 rounded-full text-xs font-mono font-bold';
-        } else {
-            badge.className = 'ml-1.5 px-2 py-0.5 bg-slate-800 text-slate-500 rounded-full text-xs font-mono';
+        const total = m11List.length;
+        const unlinked = m11List.filter(d => !isM11DocLinked(d)).length;
+        const unlinkedCls = unlinked > 0 ? 'text-rose-400' : 'text-slate-500';
+        badge.innerHTML = `<span class="text-slate-400">${total}</span><span class="text-slate-500">/</span><span class="${unlinkedCls}">${unlinked}</span>`;
+        if (badge.textContent !== `${total}/${unlinked}`) {
+            badge.textContent = `${total}/${unlinked}`;
+            badge.innerText = `${total}/${unlinked}`;
         }
+        badge.className = 'ml-1.5 px-2 py-0.5 bg-slate-800 text-slate-400 rounded-full text-xs font-mono';
     }
+}
+
+function updateVimogaBadge() {
+    const badge = document.getElementById('docs-vimoga-badge') || document.getElementById('vimoga-badge');
+    if (!badge) return;
+
+    const vimogas = (typeof allDocs !== 'undefined' && Array.isArray(allDocs))
+        ? allDocs.filter(isClassicVimoga)
+        : [];
+    const total = vimogas.length;
+
+    const linkedVimogaIds = new Set();
+    const linkedVimogaNumbers = new Set();
+    if (typeof allM11Docs !== 'undefined' && Array.isArray(allM11Docs)) {
+        allM11Docs.forEach(m => {
+            if (m && isM11DocLinked(m) && m.linked_vimoga) {
+                const vid = m.linked_vimoga.id !== undefined ? m.linked_vimoga.id : m.linked_vimoga.doc_id;
+                if (vid !== undefined && vid !== null) {
+                    linkedVimogaIds.add(Number(vid));
+                }
+                const vnum = m.linked_vimoga.number || m.linked_vimoga.doc_number;
+                if (vnum) {
+                    linkedVimogaNumbers.add(String(vnum).trim().toLowerCase());
+                }
+            }
+        });
+    }
+
+    const unlinked = vimogas.filter(v => {
+        if (v && v.id !== undefined && v.id !== null && linkedVimogaIds.has(Number(v.id))) {
+            return false;
+        }
+        if (v && v.doc_number && linkedVimogaNumbers.has(String(v.doc_number).trim().toLowerCase())) {
+            return false;
+        }
+        if ((typeof allM11Docs === 'undefined' || !allM11Docs || allM11Docs.length === 0) && v && v.linked_doc_id) {
+            return false;
+        }
+        return true;
+    }).length;
+
+    const unlinkedCls = unlinked > 0 ? 'text-rose-400' : 'text-slate-500';
+    badge.innerHTML = `<span class="text-slate-400">${total}</span><span class="text-slate-500">/</span><span class="${unlinkedCls}">${unlinked}</span>`;
+    if (badge.textContent !== `${total}/${unlinked}`) {
+        badge.textContent = `${total}/${unlinked}`;
+        badge.innerText = `${total}/${unlinked}`;
+    }
+    badge.className = 'ml-1.5 px-2 py-0.5 bg-slate-800 text-slate-400 rounded-full text-xs font-mono';
 }
 
 function renderM11Status(doc) {
@@ -221,6 +287,9 @@ async function fetchM11Docs() {
         if (!res.ok) return;
         allM11Docs = await res.json();
         updateM11Badge();
+        if (typeof updateVimogaBadge === 'function') {
+            updateVimogaBadge();
+        }
         filterM11Docs();
     } catch (e) {
         console.error('Fetch M-11 error:', e);
@@ -240,6 +309,9 @@ async function confirmM11Link(linkId) {
             return;
         }
         await fetchM11Docs();
+        if (typeof fetchDocs === 'function') {
+            fetchDocs();
+        }
     } catch (e) {
         console.error('Error confirming link:', e);
         alert('Помилка мережі при підтвердженні');
@@ -261,6 +333,9 @@ async function unbindM11Link(linkId) {
             return;
         }
         await fetchM11Docs();
+        if (typeof fetchDocs === 'function') {
+            fetchDocs();
+        }
     } catch (e) {
         console.error('Error deleting link:', e);
         alert('Помилка мережі при відв\'язанні');
@@ -394,6 +469,9 @@ async function selectVimogaForBind(vimogaDocId) {
         }
         closeBindModal();
         await fetchM11Docs();
+        if (typeof fetchDocs === 'function') {
+            fetchDocs();
+        }
     } catch (e) {
         console.error('Error binding document:', e);
         alert('Помилка мережі при прив\'язці');

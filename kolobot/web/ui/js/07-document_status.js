@@ -111,6 +111,12 @@ async function fetchDocs() {
         if (docsCountEl) {
             docsCountEl.innerText = allDocs.filter(d => !isM11Doc(d)).length;
         }
+        if (typeof updateVimogaBadge === 'function') {
+            updateVimogaBadge();
+        }
+        if (typeof updateM11Badge === 'function') {
+            updateM11Badge();
+        }
         filterDocs();
         checkSmartPolling();
     } catch(e) {
