@@ -12,7 +12,12 @@ function docLinkIndicator(doc) {
     if (normType === 'ВИМОГА') {
         if (doc.linked_doc_id) {
             const linkedNum = doc.linked_doc_number || doc.linked_doc_id;
-            html += ` <span class="text-blue-400 ml-1.5 inline-flex items-center" title="Пов'язана з М-11 ${esc(formatLinkedDocNum(linkedNum))}"><i class="fa-solid fa-link"></i></span>`;
+            const isConfirmed = (doc.match_status === 'full' || doc.match_status === 'manual') && !doc.needs_review;
+            if (isConfirmed) {
+                html += ` <span class="text-emerald-400 ml-1.5 inline-flex items-center" title="Пов'язана з М-11 ${esc(formatLinkedDocNum(linkedNum))}"><i class="fa-solid fa-check"></i></span>`;
+            } else {
+                html += ` <span class="text-blue-400 ml-1.5 inline-flex items-center" title="Пов'язана з М-11 ${esc(formatLinkedDocNum(linkedNum))}"><i class="fa-solid fa-link"></i></span>`;
+            }
         }
     }
 

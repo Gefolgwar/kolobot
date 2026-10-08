@@ -62,8 +62,8 @@ function renderM11Status(doc) {
     }
 
     if (doc.match_status === 'manual') {
-        return `<span class="inline-flex items-center gap-1.5 text-sky-400 font-medium" title="Зв'язано вручну">
-            <i class="fa-solid fa-link text-xs"></i>
+        return `<span class="inline-flex items-center gap-1.5 text-emerald-400 font-medium" title="Зв'язано вручну">
+            <i class="fa-solid fa-check text-base"></i>
             <span>Вручну</span>
         </span>`;
     }

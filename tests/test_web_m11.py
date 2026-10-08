@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import json
+import os
 import re
+import shutil
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -264,6 +268,65 @@ def test_m11_js_module_exists_and_reaches_page():
     assert "docStatusBadge(doc)" in js_content
     assert 'colspan="9"' in js_content
     assert "event.stopPropagation()" in js_content
+
+
+NODE = shutil.which("node")
+
+
+@pytest.mark.skipif(not NODE, reason="node not available")
+def test_render_m11_status_badges():
+    """Verify renderM11Status outputs green checkmarks for full and manual, suppressed on review."""
+    m11_js = JS.get("18-m11", JS.get("m11", ""))
+    script = f"""
+    let switchTab = () => {{}};
+    let refreshAll = () => {{}};
+    let document = {{ getElementById: () => ({{ classList: {{ add() {{}}, remove() {{}} }} }}) }};
+    {m11_js}
+    const full = renderM11Status({{ match_status: "full", needs_review: 0 }});
+    const manual = renderM11Status({{ match_status: "manual", needs_review: 0 }});
+    const manualReview = renderM11Status({{ match_status: "manual", needs_review: 1 }});
+    const fullReview = renderM11Status({{ match_status: "full", needs_review: 1 }});
+    const partial = renderM11Status({{ match_status: "partial", needs_review: 0 }});
+    const none = renderM11Status({{ match_status: "none", needs_review: 0 }});
+    console.log(JSON.stringify({{ full, manual, manualReview, fullReview, partial, none }}));
+    """
+    proc = subprocess.run([NODE, "-e", script], capture_output=True, text=True, encoding="utf-8")
+    assert proc.returncode == 0, proc.stderr
+    data = json.loads(proc.stdout)
+
+    # 1. Full status: green checkmark
+    assert "fa-check" in data["full"]
+    assert "text-emerald-400" in data["full"]
+    assert "Повний" in data["full"]
+
+    # 2. Manual status: green checkmark
+    assert "fa-check" in data["manual"]
+    assert "text-emerald-400" in data["manual"]
+    assert "Вручну" in data["manual"]
+    assert "fa-link" not in data["manual"]
+
+    # 3. Manual with needs_review: suppressed checkmark, amber warning shown
+    assert "fa-check" not in data["manualReview"]
+    assert "fa-triangle-exclamation" in data["manualReview"]
+    assert "text-amber-400" in data["manualReview"]
+    assert "Потребує перевірки" in data["manualReview"]
+
+    # 4. Full with needs_review: suppressed checkmark, amber warning shown
+    assert "fa-check" not in data["fullReview"]
+    assert "fa-triangle-exclamation" in data["fullReview"]
+    assert "text-amber-400" in data["fullReview"]
+
+    # 5. Partial status: amber exclamation, no checkmark
+    assert "fa-check" not in data["partial"]
+    assert "fa-exclamation" in data["partial"]
+    assert "text-amber-400" in data["partial"]
+    assert "Частковий" in data["partial"]
+
+    # 6. None status: rose circle, no checkmark
+    assert "fa-check" not in data["none"]
+    assert "fa-circle" in data["none"]
+    assert "text-rose-400" in data["none"]
+    assert "Без збігу" in data["none"]
 
 
 def test_m11_bind_modal_in_page():

@@ -260,9 +260,10 @@ def _run_render_docs(docs):
 
 
 @pytest.mark.skipif(not NODE, reason="node not available")
-def test_frontend_classic_vimoga_with_linked_m11_shows_link_icon():
-    """Classic ВИМОГА with linked M-11 shows link icon with tooltip 'Пов'язана з М-11 №...'."""
-    docs = [
+def test_frontend_classic_vimoga_with_confirmed_m11_shows_green_checkmark():
+    """Confirmed links (full and manual without needs_review) show green checkmark fa-check."""
+    # 1. Full match
+    docs_full = [
         {
             "id": 1,
             "filename": "vimoga.pdf",
@@ -278,9 +279,82 @@ def test_frontend_classic_vimoga_with_linked_m11_shows_link_icon():
             "needs_review": 0,
         }
     ]
-    html = _run_render_docs(docs)
-    assert 'fa-link' in html
-    assert 'title="Пов\'язана з М-11 №42"' in html
+    html_full = _run_render_docs(docs_full)
+    assert 'fa-check' in html_full
+    assert 'text-emerald-400' in html_full
+    assert 'fa-link' not in html_full
+    assert 'title="Пов\'язана з М-11 №42"' in html_full
+
+    # 2. Manual match
+    docs_manual = [
+        {
+            "id": 1,
+            "filename": "vimoga.pdf",
+            "file_type": "pdf",
+            "doc_type": "ВИМОГА",
+            "doc_number": "101",
+            "uploaded_at": 1000,
+            "transaction_count": 2,
+            "missing_fields": [],
+            "linked_doc_id": 2,
+            "linked_doc_number": "42",
+            "match_status": "manual",
+            "needs_review": 0,
+        }
+    ]
+    html_manual = _run_render_docs(docs_manual)
+    assert 'fa-check' in html_manual
+    assert 'text-emerald-400' in html_manual
+    assert 'fa-link' not in html_manual
+    assert 'title="Пов\'язана з М-11 №42"' in html_manual
+
+
+@pytest.mark.skipif(not NODE, reason="node not available")
+def test_frontend_classic_vimoga_partial_or_review_link_indicators():
+    """Partial links keep fa-link, and needs_review suppresses green checkmark."""
+    # 1. Partial match without review keeps fa-link and no fa-check
+    docs_partial = [
+        {
+            "id": 1,
+            "filename": "vimoga_part.pdf",
+            "file_type": "pdf",
+            "doc_type": "ВИМОГА",
+            "doc_number": "101",
+            "uploaded_at": 1000,
+            "transaction_count": 2,
+            "missing_fields": [],
+            "linked_doc_id": 2,
+            "linked_doc_number": "42",
+            "match_status": "partial",
+            "needs_review": 0,
+        }
+    ]
+    html_partial = _run_render_docs(docs_partial)
+    assert 'fa-link' in html_partial
+    assert 'text-blue-400' in html_partial
+    assert 'fa-check' not in html_partial
+
+    # 2. Full match WITH needs_review suppresses green checkmark and shows warning
+    docs_conflict = [
+        {
+            "id": 1,
+            "filename": "vimoga_rev.pdf",
+            "file_type": "pdf",
+            "doc_type": "ВИМОГА",
+            "doc_number": "101",
+            "uploaded_at": 1000,
+            "transaction_count": 2,
+            "missing_fields": [],
+            "linked_doc_id": 2,
+            "linked_doc_number": "42",
+            "match_status": "full",
+            "needs_review": 1,
+        }
+    ]
+    html_conflict = _run_render_docs(docs_conflict)
+    assert 'fa-check' not in html_conflict
+    assert 'fa-triangle-exclamation' in html_conflict
+    assert 'text-amber-400' in html_conflict
 
 
 @pytest.mark.skipif(not NODE, reason="node not available")
