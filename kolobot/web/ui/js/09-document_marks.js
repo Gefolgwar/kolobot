@@ -5,8 +5,9 @@ function docNumberTwinCounts() {
     const counts = {};
     allDocs.forEach(d => {
         if (isM11Doc(d)) return;
-        const key = normalizeDocNumber(d.doc_number);
-        if (!key) return;  // порожній номер дублем не вважається
+        const num = normalizeDocNumber(d.doc_number);
+        if (!num) return;  // порожній номер дублем не вважається
+        const key = (d.doc_type || '').trim().toUpperCase() + ':' + num;
         counts[key] = (counts[key] || 0) + 1;
     });
     return counts;

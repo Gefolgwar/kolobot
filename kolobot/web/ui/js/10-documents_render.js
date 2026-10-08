@@ -47,7 +47,8 @@ function renderDocs(docs) {
         const requestedVia = doc.requested_via || '';
         // Дубль номера: підсвічується сама клітинка, а не рядок
         const docNumberKey = normalizeDocNumber(doc.doc_number);
-        const twinCount = docNumberKey ? (twinCounts[docNumberKey] || 1) - 1 : 0;
+        const twinKey = docNumberKey ? (doc.doc_type || '').trim().toUpperCase() + ':' + docNumberKey : '';
+        const twinCount = twinKey ? (twinCounts[twinKey] || 1) - 1 : 0;
         const docNumberCls = twinCount ? 'doc-dup' : 'text-slate-300';
         // Мітка «не в обліку»: перелік не розпізнаних полів дає бекенд, клітинка лише показує його
         const missingFields = doc.missing_fields || [];

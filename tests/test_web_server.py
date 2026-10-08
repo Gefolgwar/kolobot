@@ -2116,8 +2116,8 @@ def _rendered_doc_rows(markup):
     return rows
 
 
-def _dup_doc(doc_id, doc_number):
-    return {"id": doc_id, "filename": f"f{doc_id}.pdf", "file_type": "pdf", "doc_type": "НАКЛАДНА",
+def _dup_doc(doc_id, doc_number, doc_type="НАКЛАДНА"):
+    return {"id": doc_id, "filename": f"f{doc_id}.pdf", "file_type": "pdf", "doc_type": doc_type,
             "status": "completed", "uploaded_at": doc_id, "doc_number": doc_number,
             "requested_by": "", "requested_via": "", "transaction_count": doc_id}
 
@@ -2199,6 +2199,26 @@ def test_duplicate_count_covers_the_whole_list_not_the_filtered_one():
     assert "doc-dup" not in lonely[8]["cell_class"]
 
 
+@pytest.mark.skipif(NODE is None, reason="node недоступний — JS сторінки не виконати")
+def test_same_number_different_doc_type_is_not_duplicate():
+    """Однаковий номер у різних типів документів (Накладна і Вимога) — не дубль."""
+    docs = [
+        _dup_doc(1, "№ 555", "НАКЛАДНА"),
+        _dup_doc(2, "№ 555", "ВИМОГА"),
+        _dup_doc(3, "555", "НАКЛАДНА"),  # дубль до id=1 (після нормалізації)
+    ]
+    rows = _rendered_doc_rows(_run_doc_render({"docs": docs}))
+
+    # id=1 і id=3 — обидва НАКЛАДНА з тим самим номером → дублі
+    assert "doc-dup" in rows[1]["cell_class"]
+    assert "doc-dup" in rows[3]["cell_class"]
+    assert 'title="Такий самий номер ще в 1 документах"' in rows[1]["cell"]
+
+    # id=2 — ВИМОГА з тим самим номером → НЕ дубль
+    assert "doc-dup" not in rows[2]["cell_class"]
+    assert "fa-clone" not in rows[2]["cell"]
+
+
 def test_doc_number_normalisation_is_shared_with_sorting():
     """#26: ключ порівняння номера один — і для сортування, і для пошуку дублів."""
     assert PAGE.count(DOC_DUP_KEY_HELPER) == 1
@@ -2215,7 +2235,7 @@ def test_doc_number_normalisation_is_shared_with_sorting():
     dup_block = JS["document_marks"]
     assert "normalizeDocNumber(d.doc_number)" in dup_block
     assert "allDocs.forEach" in dup_block
-    assert "if (!key) return;" in dup_block
+    assert "if (!num) return;" in dup_block
 
 
 def test_duplicate_highlight_touches_only_the_documents_table():
