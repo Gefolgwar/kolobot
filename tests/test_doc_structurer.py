@@ -229,6 +229,14 @@ def test_normalize_doc_type_m11():
     m11_with_nakladna_header = "НАКЛАДНА № 5\nТипова форма № М-11\nРядок 1"
     assert normalize_doc_type(raw_text=m11_with_nakladna_header) == "вимога м-11"
 
+    # Canonical M-11 title without "Типова форма" (Gemini OCR may omit it)
+    assert normalize_doc_type(raw_text="НАКЛАДНА-ВИМОГА на відпуск (внутрішнє переміщення) матеріалів") == "вимога м-11"
+    assert normalize_doc_type(raw_text="Накладна-вимога на відпуск (внутрішнє переміщення) матеріалів\nНомер документа: 0000-012580") == "вимога м-11"
+    assert normalize_doc_type(title="НАКЛАДНА-ВИМОГА на відпуск (внутрішнє переміщення) матеріалів") == "вимога м-11"
+    # Canonical title with varying separators
+    assert normalize_doc_type(raw_text="НАКЛАДНА ВИМОГА на відпуск (внутрішнє переміщення) матеріалів") == "вимога м-11"
+    assert normalize_doc_type(raw_text="накладна-вимога на відпуск внутрішнє переміщення матеріалів") == "вимога м-11"
+
     # Explicit doc_type / title
     assert normalize_doc_type(doc_type="вимога м-11") == "вимога м-11"
     assert normalize_doc_type(title="Типова форма № М-11") == "вимога м-11"
@@ -272,6 +280,33 @@ def test_parse_vymoha_document_exact_user_case():
     card = ds.to_card(result.doc)
     assert card.doc_type == "вимога"
     assert len(card.items) == 2
+
+
+def test_parse_m11_without_typova_forma_in_raw_text():
+    """Bug: Gemini OCR omits 'Типова форма № М-11' but keeps canonical M-11 title."""
+    json_str = json.dumps({
+        "doc_type": "вимога",
+        "title": "НАКЛАДНА-ВИМОГА на відпуск (внутрішнє переміщення) матеріалів",
+        "summary": "Накладна-вимога на внутрішнє переміщення товарів",
+        "doc_number": "0000-012580",
+        "doc_date": "06.08.2026",
+        "items": [
+            {"num": 1, "name": "ВЕНТИЛЯТОР ТОР", "quantity": "1,000", "unit": "шт",
+             "price_no_vat": "102300.20", "total_no_vat": "102300.20"},
+        ],
+        "totals": {"total_no_vat": "147385.45", "vat": "", "total_with_vat": "147385.45"},
+        "raw_text": (
+            'ТОВАРИСТВО З ОБМЕЖЕНОЮ ВІДПОВІДАЛЬНІСТЮ "УЖГОРОДСЬКИЙ МАШИНОБУДІВНИЙ ЗАВОД"\n'
+            "Ідентифікаційний код ЄДРПОУ 44676724\n"
+            "НАКЛАДНА-ВИМОГА на відпуск (внутрішнє переміщення) матеріалів\n"
+            "Номер документа: 0000-012580, Дата складання: 06.08.2026"
+        ),
+        "language": "uk",
+    })
+    ds = DocStructurer()
+    result = ds.parse(json_str)
+    assert result.status == ParseStatus.OK
+    assert result.doc.doc_type == "вимога м-11"
 
 
 def test_parse_nakladna_with_vidpusk_in_summary_condensator():

@@ -79,7 +79,9 @@ async def on_card_ready(ctx: AppContext, pending_card: PendingCard) -> None:
 
     # 3. Edit live status message in Telegram
     card_text = format_card_text(doc, pending_card.card)
-    final_text = f"✅ Документ #{item.wh_doc_id or save_result.doc_id} збережено в архів та склад!\n\n{card_text}"
+    is_m11 = getattr(doc, "doc_type", "") == "вимога м-11"
+    doc_label = "збережено в архів!" if is_m11 else "збережено в архів та склад!"
+    final_text = f"✅ Документ #{item.wh_doc_id or save_result.doc_id} {doc_label}\n\n{card_text}"
     if warehouse_msg:
         final_text += f"\n\n{warehouse_msg}"
 

@@ -311,15 +311,25 @@ def _save_to_warehouse(
                 )
                 m11_count += 1
 
-        match_m11_document(wdb, wh_doc_id)
+        match_result = match_m11_document(wdb, wh_doc_id)
 
         parts = []
         if m11_count:
             parts.append(f"{m11_count} позицій М-11")
         summary = "📋 Вимога М-11: " + ", ".join(parts) + "." if parts else "📋 Вимога М-11 збережена."
-        saved_doc = wdb.get_document(wh_doc_id)
-        notice = unaccounted_notice_uk(saved_doc) if saved_doc else ""
-        return "\n\n".join(block for block in (summary, notice) if block)
+
+        if match_result:
+            vid = match_result["vimoga_doc_id"]
+            if match_result["match_status"] == "full":
+                match_line = f"✅ Повне співпадіння з Вимогою #{vid}."
+            else:
+                match_line = f"⚠️ Часткове співпадіння з Вимогою #{vid}."
+            if match_result.get("needs_review"):
+                match_line += " (потребує перегляду)"
+        else:
+            match_line = "ℹ️ Співпадінь з існуючими вимогами не знайдено."
+
+        return "\n\n".join(block for block in (summary, match_line) if block)
 
     created = 0
     updated = 0

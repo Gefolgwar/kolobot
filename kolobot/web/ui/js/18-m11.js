@@ -163,6 +163,30 @@ function renderLinkedVimoga(doc) {
     </button>`;
 }
 
+function renderM11Legend() {
+    const body = document.getElementById('m11-legend-body');
+    if (!body) return;
+    const row = (mark, label, text) => `
+        <div class="flex gap-3 py-2">
+            <div class="w-32 shrink-0 leading-5">${mark}</div>
+            <div class="leading-5">
+                <span class="text-slate-200 font-semibold">${label}</span><span class="text-slate-400"> — ${text}</span>
+            </div>
+        </div>`;
+    const fullMark = renderM11Status({ match_status: 'full', needs_review: 0 });
+    const manualMark = renderM11Status({ match_status: 'manual', needs_review: 0 });
+    const partialMark = renderM11Status({ match_status: 'partial', needs_review: 0 });
+    const reviewMark = renderM11Status({ match_status: 'full', needs_review: 1 });
+    const noneMark = renderM11Status({ match_status: 'none', needs_review: 0 });
+    body.innerHTML =
+        '<div class="py-2 text-slate-400">Документи М-11 не змінюють складського обліку — вони лише шукають відповідні вимоги, що співпадають за назвою та кількістю позицій.</div>' +
+        row(fullMark, 'Повний збіг', 'усі позиції М-11 збігаються з позиціями пов’язаної вимоги') +
+        row(manualMark, 'Зв’язано вручну', 'зв’язок між М-11 та вимогою встановлений вами') +
+        row(partialMark, 'Частковий збіг', 'збігається лише частина позицій') +
+        row(reviewMark, 'Потребує перевірки', 'зв’язок знайдено автоматично, але є розбіжності') +
+        row(noneMark, 'Без збігу', 'відповідну вимогу не знайдено — прив’яжіть вручну');
+}
+
 function renderM11Table(docs) {
     const tbody = document.getElementById('m11-tbody');
     const visibleEl = document.getElementById('visible-m11-count');
@@ -209,6 +233,8 @@ function renderM11Table(docs) {
         }
         actionsHtml += `<button type="button" onclick="event.stopPropagation(); viewDocument(${doc.id}, '${escapeHtml(doc.filename || '')}', '${escapeHtml(doc.file_type || '')}')" class="p-1.5 text-slate-400 hover:text-sky-400 hover:bg-sky-500/10 rounded-lg transition" title="Переглянути документ">
             <i class="fa-solid fa-eye"></i>
+        </button><button type="button" onclick="event.stopPropagation(); openDeleteModal(${doc.id}, '${escapeHtml(doc.filename || '')}')" class="p-1.5 text-slate-400 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition" title="Видалити">
+            <i class="fa-solid fa-trash"></i>
         </button></div>`;
 
         html += `<tr class="hover:bg-slate-800/40 transition cursor-pointer" onclick="toggleM11Accordion(${doc.id})">
@@ -507,6 +533,7 @@ switchTab = function(tab) {
 
         if (pm) pm.classList.remove('hidden');
         if (tm) tm.className = tm.className.replace('tab-inactive', 'tab-active');
+        renderM11Legend();
         fetchM11Docs();
     }
 };

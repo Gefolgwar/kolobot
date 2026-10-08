@@ -178,3 +178,20 @@ def test_save_to_warehouse_m11_repeat_recognition_updates_m11_items(warehouse_db
     # Транзакцій все одно 0
     cur_tx = warehouse_db._conn.execute("SELECT COUNT(*) as cnt FROM warehouse_transactions")
     assert cur_tx.fetchone()["cnt"] == 0
+
+
+def test_save_to_warehouse_m11_never_shows_unaccounted_notice(warehouse_db, tmp_path):
+    """М-11 ніколи не впливає на залишки — попередження «Не в обліку» не надсилається."""
+    file_store = FileStore(downloads_path=str(tmp_path / "downloads"))
+    doc = _make_m11_doc(requested_by="", requested_via="", doc_date="")
+
+    summary = _save_to_warehouse(
+        warehouse_db,
+        file_store,
+        doc,
+        {"file_name": "m11_incomplete.jpg", "ext": ".jpg", "mime": "image/jpeg"},
+        "doc-m11-incomplete",
+    )
+
+    assert "Не в обліку" not in summary
+    assert "не враховано в залишках" not in summary

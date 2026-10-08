@@ -84,9 +84,14 @@ def normalize_doc_type(
     text_lower = (raw_text or "").strip().lower()
 
     # Priority 0: Check M-11 in full raw text or explicit doc_type (before вимога/накладна rules)
+    # "НАКЛАДНА-ВИМОГА на відпуск (внутрішнє переміщення) матеріалів" is the canonical M-11 title
+    _m11_header = r"типова\s+форма\s*№?\s*м[\s-]*11"
+    _m11_canonical = r"накладна[\s-]+вимога\s+на\s+відпуск\s*\(?\s*внутрішн"
     if (
-        re.search(r"типова\s+форма\s*№?\s*м[\s-]*11", raw_text or "", re.IGNORECASE)
-        or re.search(r"типова\s+форма\s*№?\s*м[\s-]*11", title or "", re.IGNORECASE)
+        re.search(_m11_header, raw_text or "", re.IGNORECASE)
+        or re.search(_m11_header, title or "", re.IGNORECASE)
+        or re.search(_m11_canonical, raw_text or "", re.IGNORECASE)
+        or re.search(_m11_canonical, title or "", re.IGNORECASE)
         or dt_lower in ("вимога м-11", "м-11")
     ):
         return "вимога м-11"
