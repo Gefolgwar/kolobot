@@ -12,7 +12,7 @@ let currentEditDocId = null;
 let currentEditDocField = null;
 
 function openDocFieldModal(docId, field) {
-    const doc = allDocs.find(d => d.id === docId);
+    const doc = (allDocs && allDocs.find(d => d.id === docId)) || (typeof allM11Docs !== 'undefined' && allM11Docs.find(d => d.id === docId));
     if (!doc) return;
     currentEditItemId = null;
     currentEditField = null;
@@ -68,7 +68,9 @@ async function submitDocField() {
         return;
     }
     const impactRow = document.getElementById('doc-impact-row-' + docId);
-    const wasOpen = !!impactRow && !impactRow.classList.contains('hidden');
+    const m11ImpactRow = document.getElementById('m11-impact-row-' + docId);
+    const wasOpenDoc = !!impactRow && !impactRow.classList.contains('hidden');
+    const wasOpenM11 = !!m11ImpactRow && !m11ImpactRow.classList.contains('hidden');
 
     saveBtn.disabled = true;
     saveBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> <span>Збереження...</span>';
@@ -90,7 +92,8 @@ async function submitDocField() {
         // останнього поля вводить документ в облік — тож оновлюємо обидві вкладки.
         // Перемальовування таблиці згортає картку, тому розгортаємо її назад.
         await refreshAll();
-        if (wasOpen) await toggleDocImpact(docId);
+        if (wasOpenDoc) await toggleDocImpact(docId);
+        if (wasOpenM11 && typeof toggleM11Accordion === 'function') await toggleM11Accordion(docId);
     } catch(e) {
         errEl.textContent = 'Помилка: ' + e.message;
         errEl.classList.remove('hidden');

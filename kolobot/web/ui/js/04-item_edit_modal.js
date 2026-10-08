@@ -117,9 +117,9 @@ async function submitEditField() {
         }
 
         // Reload any currently expanded document impact views
-        const openImpactRows = document.querySelectorAll('[id^="doc-impact-row-"]:not(.hidden)');
+        const openImpactRows = document.querySelectorAll('[id^="doc-impact-row-"]:not(.hidden), [id^="m11-impact-row-"]:not(.hidden)');
         for (const row of openImpactRows) {
-            const docId = parseInt(row.id.replace('doc-impact-row-', ''));
+            const docId = parseInt(row.id.replace('doc-impact-row-', '').replace('m11-impact-row-', ''));
             if (docId) {
                 await reloadDocImpact(docId);
             }

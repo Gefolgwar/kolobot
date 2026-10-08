@@ -224,21 +224,28 @@ def test_m11_tab_navigation_in_shell():
 
 
 def test_m11_panel_and_table_structure_in_page():
-    """Verify panel-m11 container and required table columns exist in PAGE."""
+    """Verify panel-m11 container, chevron column, restructured headers, and colspan in PAGE."""
     assert 'id="panel-m11"' in PAGE
     assert 'id="m11-tbody"' in PAGE
 
-    # Verify table headers
-    for th in ("№ М-11", "Дата", "Підстава/Кому", "Позицій", "Статус", "Пов'язана ВИМОГА", "Дії"):
+    # Chevron header exists as first column
+    assert '<th class="py-3 px-3 w-14"></th>' in PAGE
+
+    # Verify restructured table headers: Статус (OCR) and Збіг (matching)
+    for th in ("№ М-11", "Дата", "Підстава/Кому", "Позицій", "Статус", "Збіг", "Пов'язана ВИМОГА", "Дії"):
         assert f">{th}</th>" in PAGE or f">{th} </th>" in PAGE
+
+    # Verify empty state row has colspan 9
+    assert 'colspan="9"' in PAGE
 
 
 def test_m11_js_module_exists_and_reaches_page():
-    """Verify 18-m11.js is loaded and includes essential functions."""
+    """Verify 18-m11.js is loaded and includes essential functions and accordion support."""
     assert "18-m11" in JS or "m11" in JS
     js_content = JS.get("18-m11", JS.get("m11", ""))
     assert "fetchM11Docs" in js_content
     assert "renderM11Table" in js_content
+    assert "toggleM11Accordion" in js_content
     assert "isM11Problematic" in js_content
     assert "updateM11Badge" in js_content
     assert "renderM11Status" in js_content
@@ -249,6 +256,14 @@ def test_m11_js_module_exists_and_reaches_page():
     assert "closeBindModal" in js_content
     assert "selectVimogaForBind" in js_content
     assert "filterAvailableVimogas" in js_content
+
+    # Accordion markers in JS render
+    assert "m11-chevron-" in js_content
+    assert "m11-impact-row-" in js_content
+    assert "m11-impact-content-" in js_content
+    assert "docStatusBadge(doc)" in js_content
+    assert 'colspan="9"' in js_content
+    assert "event.stopPropagation()" in js_content
 
 
 def test_m11_bind_modal_in_page():
@@ -463,6 +478,62 @@ async def test_api_available_vimogas(warehouse_env):
         assert data[1]["is_linked"] is True
         assert data[1]["linked_m11_doc_id"] == m11_id
         assert data[1]["linked_m11_doc_number"] == "М11-01"
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_m11_document_impact_and_ocr(warehouse_env):
+    """M-11 items are included in get_document_impact and returned by GET /api/warehouse/documents/{id}/ocr."""
+    db, fs, vs = warehouse_env
+
+    m11_id = db.add_document(
+        filename="m11_with_items.jpg",
+        file_type="photo",
+        doc_type="ВИМОГА М-11",
+        doc_number="М11-77",
+        doc_date="2026-03-20",
+        raw_text="Вимога М-11 № 77",
+    )
+    db.add_m11_item(
+        document_id=m11_id,
+        name="Кабель силовий",
+        quantity=50.0,
+        unit="м",
+        nomenclature_number="KBL-01",
+    )
+    db.add_m11_item(
+        document_id=m11_id,
+        name="Автомат 16А",
+        quantity=3.0,
+        unit="шт",
+        nomenclature_number="AVT-16",
+    )
+
+    # 1. DB get_document_impact
+    impact = db.get_document_impact(m11_id)
+    assert len(impact) == 2
+    assert impact[0]["name"] == "Кабель силовий"
+    assert impact[0]["quantity"] == 50.0
+    assert impact[0]["unit"] == "м"
+    assert impact[0]["sku"] == "KBL-01"
+    assert impact[0]["operation_type"] == "expense"
+
+    # 2. HTTP GET /ocr endpoint
+    server = WebServer(warehouse_db=db, file_store=fs, vector_store=vs, owner_user_id=42)
+    client = TestClient(TestServer(server.app))
+    await client.start_server()
+
+    try:
+        resp = await client.get(f"/api/warehouse/documents/{m11_id}/ocr")
+        assert resp.status == 200
+        ocr_data = await resp.json()
+        assert ocr_data["id"] == m11_id
+        assert ocr_data["doc_type"] == "ВИМОГА М-11"
+        assert ocr_data["doc_number"] == "М11-77"
+        assert len(ocr_data["impact"]) == 2
+        assert ocr_data["impact"][0]["name"] == "Кабель силовий"
+        assert ocr_data["impact"][1]["name"] == "Автомат 16А"
     finally:
         await client.close()
 

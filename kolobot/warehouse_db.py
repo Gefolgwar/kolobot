@@ -686,7 +686,23 @@ class WarehouseDB:
             WHERE wt.document_id = ?
             ORDER BY wi.name
         """, (doc_id,)).fetchall()
-        return [dict(r) for r in rows]
+        if rows:
+            return [dict(r) for r in rows]
+
+        m11_rows = self._conn.execute("""
+            SELECT
+                id AS item_id,
+                nomenclature_number AS sku,
+                name,
+                unit,
+                quantity,
+                'expense' AS operation_type,
+                '' AS source_row
+            FROM m11_items
+            WHERE document_id = ?
+            ORDER BY id ASC
+        """, (doc_id,)).fetchall()
+        return [dict(r) for r in m11_rows]
 
     def clear_document_transactions(self, doc_id: int) -> int:
         """Прибирає всі транзакції документа, не чіпаючи позиції складу та їхні ручні поля.

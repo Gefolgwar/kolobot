@@ -1,13 +1,18 @@
 
 async function reloadDocImpact(docId) {
-    const content = document.getElementById('doc-impact-content-' + docId);
-    if (!content) return;
+    const targets = [
+        document.getElementById('doc-impact-content-' + docId),
+        document.getElementById('m11-impact-content-' + docId)
+    ].filter(Boolean);
+    if (targets.length === 0) return;
 
     try {
         const res = await fetch('/api/warehouse/documents/' + docId + '/ocr');
         const data = await res.json();
         if (data.error) {
-            content.innerHTML = '<p class="text-red-400 py-2">Помилка: ' + esc(data.error) + '</p>';
+            targets.forEach(content => {
+                content.innerHTML = '<p class="text-red-400 py-2">Помилка: ' + esc(data.error) + '</p>';
+            });
             return;
         }
 
@@ -183,9 +188,13 @@ async function reloadDocImpact(docId) {
         }
 
         h += '</div>';
-        content.innerHTML = h;
+        targets.forEach(content => {
+            content.innerHTML = h;
+        });
     } catch(e) {
-        content.innerHTML = '<p class="text-red-400 py-2">Помилка завантаження: ' + esc(e.message) + '</p>';
+        targets.forEach(content => {
+            content.innerHTML = '<p class="text-red-400 py-2">Помилка завантаження: ' + esc(e.message) + '</p>';
+        });
     }
 }
 

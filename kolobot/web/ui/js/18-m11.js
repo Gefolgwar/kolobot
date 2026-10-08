@@ -105,7 +105,7 @@ function renderM11Table(docs) {
 
     if (!docs || docs.length === 0) {
         tbody.innerHTML = `<tr>
-            <td colspan="7" class="py-12 text-center text-slate-500">
+            <td colspan="9" class="py-12 text-center text-slate-500">
                 <i class="fa-solid fa-file-invoice text-3xl mb-3 text-slate-600 block"></i>
                 <p>Документів М-11 немає.</p>
             </td>
@@ -119,7 +119,8 @@ function renderM11Table(docs) {
         const docDate = escapeHtml(doc.doc_date || '—');
         const req = escapeHtml(doc.requested_by || doc.requested_via || '—');
         const itemCount = doc.item_count || 0;
-        const statusHtml = renderM11Status(doc);
+        const processingStatusHtml = docStatusBadge(doc);
+        const matchStatusHtml = renderM11Status(doc);
         const vimogaHtml = renderLinkedVimoga(doc);
 
         let actionsHtml = `<div class="flex items-center justify-end gap-1.5 flex-wrap">`;
@@ -144,7 +145,8 @@ function renderM11Table(docs) {
             <i class="fa-solid fa-eye"></i>
         </button></div>`;
 
-        html += `<tr class="hover:bg-slate-800/40 transition cursor-pointer" onclick="viewDocument(${doc.id}, '${escapeHtml(doc.filename || '')}', '${escapeHtml(doc.file_type || '')}')">
+        html += `<tr class="hover:bg-slate-800/40 transition cursor-pointer" onclick="toggleM11Accordion(${doc.id})">
+            <td class="py-4 px-3 whitespace-nowrap"><i id="m11-chevron-${doc.id}" class="fa-solid fa-chevron-right text-[10px] text-slate-500 transition-transform"></i></td>
             <td class="py-4 px-3 font-medium text-slate-200" data-label="№ М-11">
                 <span class="flex items-center gap-2">
                     <i class="fa-solid fa-file-invoice text-indigo-400"></i>
@@ -154,13 +156,42 @@ function renderM11Table(docs) {
             <td class="py-4 px-3 text-slate-300" data-label="Дата">${docDate}</td>
             <td class="py-4 px-3 text-slate-300" data-label="Підстава/Кому">${req}</td>
             <td class="py-4 px-3 text-blue-400 font-medium" data-label="Позицій">${itemCount}</td>
-            <td class="py-4 px-3" data-label="Статус">${statusHtml}</td>
+            <td class="py-4 px-3" data-label="Статус">${processingStatusHtml}</td>
+            <td class="py-4 px-3" data-label="Збіг">${matchStatusHtml}</td>
             <td class="py-4 px-3" data-label="Пов'язана ВИМОГА">${vimogaHtml}</td>
             <td class="py-4 px-3 text-right" data-label="Дії">${actionsHtml}</td>
+        </tr>
+        <tr id="m11-impact-row-${doc.id}" class="hidden">
+            <td colspan="9" class="p-0">
+                <div class="expand-row px-8 py-4 border-t border-slate-800/40">
+                    <div id="m11-impact-content-${doc.id}" class="text-xs text-slate-400">Завантаження...</div>
+                </div>
+            </td>
         </tr>`;
     });
 
     tbody.innerHTML = html;
+}
+
+async function toggleM11Accordion(docId) {
+    const row = document.getElementById('m11-impact-row-' + docId);
+    const chevron = document.getElementById('m11-chevron-' + docId);
+    if (!row) return;
+
+    if (!row.classList.contains('hidden')) {
+        row.classList.add('hidden');
+        if (chevron) chevron.style.transform = '';
+        return;
+    }
+
+    row.classList.remove('hidden');
+    if (chevron) chevron.style.transform = 'rotate(90deg)';
+
+    const content = document.getElementById('m11-impact-content-' + docId);
+    if (content) {
+        content.innerHTML = '<div class="py-4 text-center text-slate-500"><i class="fa-solid fa-spinner fa-spin mr-2"></i>Завантаження даних...</div>';
+    }
+    await reloadDocImpact(docId);
 }
 
 function filterM11Docs() {
