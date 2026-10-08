@@ -14,7 +14,7 @@ OCR_PROMPT = (
     "Extract structured metadata and full text from this image. "
     "Return JSON with the following schema:\n"
     "{\n"
-    '  "doc_type": "вимога|накладна|receipt|invoice|contract|id_card|note|other",\n'
+    '  "doc_type": "вимога м-11|вимога|накладна|receipt|invoice|contract|id_card|note|other",\n'
     '  "title": "Short title describing the document",\n'
     '  "summary": "Brief 1-2 sentence summary of content, including key amounts and main items/services if present",\n'
     '  "key_value_pairs": [{"key": "Field name", "value": "Field value"}],\n'
@@ -36,7 +36,11 @@ OCR_PROMPT = (
     '  "totals": {"total_no_vat": "1975.00", "vat": "395.00", "total_with_vat": "2370.00"}\n'
     "}\n\n"
     "IMPORTANT FOR INVENTORY AND DOCUMENT TYPE:\n"
-    "- For 'doc_type': determine the document type strictly from the actual printed title/header at the top of the document (top-left or centered header). If the printed header says 'НАКЛАДНА' (or 'Прибуткова накладна', 'Видаткова накладна', 'ТТН', etc.), set 'doc_type' to 'накладна'. If the printed header says 'ВИМОГА' (or 'Вимога-накладна', 'Акт списання', etc.), set 'doc_type' to 'вимога'. Otherwise use 'receipt', 'contract', 'id_card', 'note', or 'other'. Do NOT set 'вимога' if the document header is titled 'НАКЛАДНА'.\n"
+    "- For 'doc_type': determine the document type strictly from the actual printed title/header at the top of the document.\n"
+    "  * If the document contains 'Типова форма М-11' anywhere OR the title reads 'НАКЛАДНА-ВИМОГА на відпуск (внутрішнє переміщення) матеріалів', set 'doc_type' to 'вимога м-11'. This is the M-11 internal transfer form and takes priority over all other classifications.\n"
+    "  * If the printed header says 'НАКЛАДНА' (or 'Прибуткова накладна', 'Видаткова накладна', 'ТТН', etc.) and it is NOT an M-11 form, set 'doc_type' to 'накладна'.\n"
+    "  * If the printed header says 'ВИМОГА' (or 'Вимога-накладна', 'Акт списання', etc.) and it is NOT an M-11 form, set 'doc_type' to 'вимога'.\n"
+    "  * Otherwise use 'receipt', 'contract', 'id_card', 'note', or 'other'. Do NOT set 'вимога' if the document header is titled 'НАКЛАДНА'.\n"
     "- Extract 'nomenclature_number', 'item_name', 'doc_date', 'incoming', 'outgoing', 'balance', 'unit', 'doc_number', 'supplier', 'requested_by', 'requested_via', 'notes' based on the main content of the document.\n"
     "- 'requested_by' is the person who requested the document (the 'ЗАТРЕБУВАВ' field on the form), usually a position followed by a name. Copy it as printed. Do NOT confuse it with the 'ЗАТРЕБУВАНО' table column (requested quantity), and do NOT use 'ВІДПУСТИВ'/'ОДЕРЖАВ' values.\n"
     "- 'requested_via' is the 'ЧЕРЕЗ КОГО' field of the same form — the intermediary through whom the document was requested, usually a code and/or position. Copy it as printed; do NOT confuse it with 'ЗАМОВЛЕННЯ' or 'СТ. ВИТРАТ' that follow it.\n"

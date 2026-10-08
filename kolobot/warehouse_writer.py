@@ -31,9 +31,12 @@ def _detect_doc_type_and_op(doc: Any) -> tuple[str, str]:
     raw_text = (getattr(doc, "raw_text", "") or "").strip()
 
     # Priority 0: M-11 detection before existing ВИМОГА/НАКЛАДНА checks
+    _m11_canonical = r"накладна[\s-]+вимога\s+на\s+відпуск\s*\(?\s*внутрішн"
     if (
         re.search(r"типова\s+форма\s*№?\s*м[\s-]*11", raw_text, re.IGNORECASE)
         or re.search(r"типова\s+форма\s*№?\s*м[\s-]*11", title, re.IGNORECASE)
+        or re.search(_m11_canonical, raw_text, re.IGNORECASE)
+        or re.search(_m11_canonical, title, re.IGNORECASE)
         or raw_doc_type in ("вимога м-11", "м-11")
     ):
         return "ВИМОГА М-11", ""
