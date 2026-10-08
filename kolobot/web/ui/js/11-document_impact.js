@@ -1,4 +1,105 @@
 
+function _escHtml(s) {
+    if (typeof esc === 'function') return esc(s);
+    return String(s || '').replace(/[&<>"']/g, m => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;'
+    }[m]));
+}
+
+function _checkIsM11(doc) {
+    if (typeof isM11Doc === 'function') return isM11Doc(doc);
+    if (!doc) return false;
+    const t = (doc.doc_type || '').trim().replace(/\s+/g, ' ').toUpperCase();
+    return t === 'ВИМОГА М-11' || t === 'М-11' || t === 'ВИМОГА M-11' || t === 'M-11';
+}
+
+function renderLinkedDocCard(doc, type) {
+    if (!doc) return '';
+
+    const rawType = (type || doc.doc_type || '').trim();
+    const upperType = rawType.toUpperCase();
+    const isM11 = upperType.includes('11') || upperType.includes('M-11') || upperType.includes('М-11');
+
+    const displayType = isM11 ? 'М-11' : (type || 'ВІМОГА');
+    const typeBadge = isM11
+        ? `<span class="px-2 py-0.5 rounded-full text-xs font-semibold badge-import inline-flex items-center gap-1"><i class="fa-solid fa-file-invoice text-[11px]"></i>${_escHtml(displayType)}</span>`
+        : `<span class="px-2 py-0.5 rounded-full text-xs font-semibold badge-vymoha inline-flex items-center gap-1"><i class="fa-solid fa-arrow-up text-[11px]"></i>${_escHtml(displayType)}</span>`;
+
+    const rawNum = doc.doc_number || doc.number || (doc.id ? 'ID ' + doc.id : '—');
+    const numStr = String(rawNum).trim();
+    const docNum = (numStr.startsWith('№') || numStr.startsWith('ID') || numStr === '—') ? numStr : '№ ' + numStr;
+    const docDate = doc.doc_date || doc.date || '—';
+
+    let statusBadgeHtml = '';
+    if (typeof docStatusBadge === 'function') {
+        statusBadgeHtml = docStatusBadge(doc);
+    } else {
+        const s = doc.status || 'completed';
+        statusBadgeHtml = `<span class="px-2 py-0.5 rounded-full text-[11px] font-medium whitespace-nowrap badge-import">${_escHtml(s)}</span>`;
+    }
+
+    if (doc.match_status && typeof renderM11Status === 'function') {
+        statusBadgeHtml = `<span class="inline-flex items-center gap-2">${statusBadgeHtml}${renderM11Status(doc)}</span>`;
+    }
+
+    const docId = doc.id || 0;
+    const filename = doc.filename || '';
+    const fileType = doc.file_type || '';
+
+    const btnOnClick = `event.stopPropagation(); viewDocument(${docId}, '${_escHtml(filename).replace(/'/g, "\\'")}', '${_escHtml(fileType)}')`;
+
+    return `<div class="linked-doc-card rounded-xl border border-slate-700/80 bg-slate-800/50 p-3 flex flex-wrap items-center justify-between gap-3 shadow-sm">
+        <div class="flex items-center flex-wrap gap-2.5">
+            <span class="text-xs font-semibold uppercase tracking-wider text-slate-400">Пов'язаний документ:</span>
+            ${typeBadge}
+            <span class="font-mono font-bold text-slate-200">${_escHtml(docNum)}</span>
+            <span class="text-xs text-slate-400">${_escHtml(docDate)}</span>
+            ${statusBadgeHtml}
+        </div>
+        <div>
+            <button type="button" onclick="${btnOnClick}" class="px-3 py-1.5 text-xs font-medium text-sky-400 bg-sky-500/10 border border-sky-500/30 hover:bg-sky-500/20 rounded-lg transition inline-flex items-center gap-1.5 cursor-pointer" title="Переглянути документ">
+                <i class="fa-solid fa-eye text-xs"></i>
+                <span>Переглянути</span>
+            </button>
+        </div>
+    </div>`;
+}
+
+function getLinkedCardForDoc(docId, data, content) {
+    const isM11 = (content && content.id && content.id.indexOf('m11-') !== -1) || _checkIsM11(data);
+    const m11List = (typeof allM11Docs !== 'undefined' && Array.isArray(allM11Docs)) ? allM11Docs : [];
+
+    if (isM11) {
+        const m11 = m11List.find(d => d && Number(d.id) === Number(docId));
+        if (m11 && m11.linked_vimoga) {
+            let vimoga = m11.linked_vimoga;
+            if (typeof allDocs !== 'undefined' && Array.isArray(allDocs)) {
+                const fullVimoga = allDocs.find(d => d && Number(d.id) === Number(vimoga.id));
+                if (fullVimoga) {
+                    vimoga = Object.assign({}, fullVimoga, vimoga);
+                }
+            }
+            return renderLinkedDocCard(vimoga, 'ВІМОГА');
+        }
+        return '';
+    }
+
+    const dt = (data && data.doc_type ? data.doc_type : '').trim().toUpperCase();
+    if ((dt === 'ВИМОГА' || dt === 'ВІМОГА') && !_checkIsM11(data)) {
+        let linkedM11 = m11List.find(m => m && m.linked_vimoga && Number(m.linked_vimoga.id) === Number(docId));
+        if (!linkedM11) {
+            const curDoc = (typeof allDocs !== 'undefined' && Array.isArray(allDocs)) ? allDocs.find(d => d && Number(d.id) === Number(docId)) : null;
+            if (curDoc && curDoc.linked_doc_id) {
+                linkedM11 = m11List.find(m => m && Number(m.id) === Number(curDoc.linked_doc_id));
+            }
+        }
+        if (linkedM11) {
+            return renderLinkedDocCard(linkedM11, 'М-11');
+        }
+    }
+    return '';
+}
+
 async function reloadDocImpact(docId) {
     const targets = [
         document.getElementById('doc-impact-content-' + docId),
@@ -20,7 +121,7 @@ async function reloadDocImpact(docId) {
         const rawText = data.raw_text || '';
         const impacts = data.impact || [];
 
-        let h = '<div class="space-y-4">';
+        let h = '';
 
         // Попередження про неповне розпізнавання (#29): той самий перелік, що й у мітці рядка.
         const missingFields = data.missing_fields || [];
@@ -187,9 +288,9 @@ async function reloadDocImpact(docId) {
             }
         }
 
-        h += '</div>';
         targets.forEach(content => {
-            content.innerHTML = h;
+            const cardHtml = getLinkedCardForDoc(docId, data, content);
+            content.innerHTML = '<div class="space-y-4">' + (cardHtml || '') + h + '</div>';
         });
     } catch(e) {
         targets.forEach(content => {
