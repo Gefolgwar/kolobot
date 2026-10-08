@@ -3,6 +3,12 @@ let allDocs = [];
 let currentViewingDocId = null;
 let activeFilter = '';
 
+function isM11Doc(doc) {
+    if (!doc) return false;
+    const t = (doc.doc_type || '').trim().replace(/\s+/g, ' ').toUpperCase();
+    return t === 'ВИМОГА М-11' || t === 'М-11' || t === 'ВИМОГА M-11' || t === 'M-11';
+}
+
 function switchTab(tab) {
     const wh = document.getElementById('panel-warehouse');
     const dc = document.getElementById('panel-documents');

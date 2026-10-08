@@ -4,6 +4,7 @@
 function docNumberTwinCounts() {
     const counts = {};
     allDocs.forEach(d => {
+        if (isM11Doc(d)) return;
         const key = normalizeDocNumber(d.doc_number);
         if (!key) return;  // порожній номер дублем не вважається
         counts[key] = (counts[key] || 0) + 1;
@@ -19,7 +20,7 @@ function docNumberTwinCounts() {
 let docFilter = '';
 
 function isDocUnaccounted(doc) {
-    return (doc.missing_fields || []).length > 0;
+    return !isM11Doc(doc) && (doc.missing_fields || []).length > 0;
 }
 
 function setDocFilter(filter) {

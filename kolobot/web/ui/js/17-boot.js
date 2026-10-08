@@ -1,6 +1,7 @@
 
 document.addEventListener('DOMContentLoaded', function() {
     refreshAll();
+    fetchM11Docs();
     fetchLogs();
     connectLogStream();
     renderDocLegend();

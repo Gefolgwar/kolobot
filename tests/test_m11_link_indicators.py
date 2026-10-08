@@ -323,10 +323,10 @@ def test_frontend_clean_baseline_documents_show_no_extra_indicators():
 
 
 @pytest.mark.skipif(not NODE, reason="node not available")
-def test_frontend_m11_match_statuses_and_linked_number():
-    """M-11 documents show match status icons (full/partial/none) and linked ВИМОГА number."""
+def test_frontend_m11_documents_excluded_from_documents_table():
+    """M-11 documents do not appear as rows in the Documents tab table."""
     docs = [
-        # 1. Full match with linked vimoga
+        # M-11 documents of different formats/cases
         {
             "id": 10,
             "filename": "m11_full.pdf",
@@ -336,60 +336,33 @@ def test_frontend_m11_match_statuses_and_linked_number():
             "uploaded_at": 1000,
             "transaction_count": 0,
             "missing_fields": [],
-            "linked_doc_id": 1,
-            "linked_doc_number": "101",
-            "match_status": "full",
-            "needs_review": 0,
         },
-        # 2. Partial match with linked vimoga
         {
             "id": 20,
-            "filename": "m11_partial.pdf",
+            "filename": "m11_lower.pdf",
             "file_type": "pdf",
-            "doc_type": "ВИМОГА М-11",
+            "doc_type": "м-11",
             "doc_number": "М-2",
             "uploaded_at": 1001,
             "transaction_count": 0,
             "missing_fields": [],
-            "linked_doc_id": 2,
-            "linked_doc_number": "102",
-            "match_status": "partial",
-            "needs_review": 0,
         },
-        # 3. No match (unlinked)
+        # Classic document that SHOULD be rendered
         {
             "id": 30,
-            "filename": "m11_none.pdf",
+            "filename": "nakladna.pdf",
             "file_type": "pdf",
-            "doc_type": "ВИМОГА М-11",
-            "doc_number": "М-3",
+            "doc_type": "НАКЛАДНА",
+            "doc_number": "Н-3",
             "uploaded_at": 1002,
-            "transaction_count": 0,
+            "transaction_count": 2,
             "missing_fields": [],
-            "linked_doc_id": None,
-            "linked_doc_number": None,
-            "match_status": "none",
-            "needs_review": 0,
         },
     ]
     html = _run_render_docs(docs)
-
-    # Full match has checkmark (fa-check) and linked vimoga number
-    assert 'fa-check' in html
-    assert 'title="Повний збіг"' in html
-    assert 'title="Пов\'язана з ВИМОГА №101"' in html
-    assert '>№101<' in html
-
-    # Partial match has exclamation and linked vimoga number
-    assert 'fa-exclamation' in html
-    assert 'title="Частковий збіг"' in html
-    assert 'title="Пов\'язана з ВИМОГА №102"' in html
-    assert '>№102<' in html
-
-    # Unlinked has red circle and no linked number
-    assert 'fa-circle' in html
-    assert 'text-rose-500' in html
-    assert 'title="Немає збігу"' in html
+    assert 'm11_full.pdf' not in html
+    assert 'm11_lower.pdf' not in html
+    assert 'nakladna.pdf' in html
 
 
 @pytest.mark.skipif(not NODE, reason="node not available")

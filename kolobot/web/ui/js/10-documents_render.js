@@ -14,19 +14,6 @@ function docLinkIndicator(doc) {
             const linkedNum = doc.linked_doc_number || doc.linked_doc_id;
             html += ` <span class="text-blue-400 ml-1.5 inline-flex items-center" title="Пов'язана з М-11 ${esc(formatLinkedDocNum(linkedNum))}"><i class="fa-solid fa-link"></i></span>`;
         }
-    } else if (normType === 'ВИМОГА М-11' || normType === 'М-11') {
-        const status = doc.match_status || 'none';
-        if (status === 'full') {
-            html += ' <span class="text-emerald-400 ml-1.5 inline-flex items-center" title="Повний збіг"><i class="fa-solid fa-check"></i></span>';
-        } else if (status === 'partial') {
-            html += ' <span class="text-amber-400 ml-1.5 inline-flex items-center" title="Частковий збіг"><i class="fa-solid fa-exclamation"></i></span>';
-        } else {
-            html += ' <span class="text-rose-500 ml-1.5 inline-flex items-center" title="Немає збігу"><i class="fa-solid fa-circle text-[10px]"></i></span>';
-        }
-        if (doc.linked_doc_id) {
-            const linkedNum = doc.linked_doc_number || doc.linked_doc_id;
-            html += ` <span class="text-xs text-slate-300 font-mono ml-1" title="Пов'язана з ВИМОГА ${esc(formatLinkedDocNum(linkedNum))}">${esc(formatLinkedDocNum(linkedNum))}</span>`;
-        }
     }
 
     if (doc.needs_review) {
@@ -38,7 +25,7 @@ function docLinkIndicator(doc) {
 
 function renderDocs(docs) {
     lastRenderedDocs = docs;
-    const sorted = applyDocSort(docs);
+    const sorted = applyDocSort(docs).filter(d => !isM11Doc(d));
     const twinCounts = docNumberTwinCounts();
     const tbody = document.getElementById('docs-tbody');
     if (sorted.length === 0) {
@@ -65,8 +52,6 @@ function renderDocs(docs) {
             docTypeBadge = '<span class="px-2 py-0.5 rounded-full text-[11px] font-medium badge-nakladna"><i class="fa-solid fa-arrow-down mr-1"></i>Накладна</span>';
         } else if (normDocType === 'ВИМОГА') {
             docTypeBadge = '<span class="px-2 py-0.5 rounded-full text-[11px] font-medium badge-vymoha"><i class="fa-solid fa-arrow-up mr-1"></i>Вимога</span>';
-        } else if (normDocType === 'ВИМОГА М-11' || normDocType === 'М-11') {
-            docTypeBadge = '<span class="px-2 py-0.5 rounded-full text-[11px] font-medium badge-import" title="ВИМОГА М-11"><i class="fa-solid fa-file-invoice mr-1"></i>Вимога М-11</span>';
         } else if (docType) {
             docTypeBadge = `<span class="px-2 py-0.5 rounded-full text-[11px] font-medium badge-import">${esc(docType)}</span>`;
         } else {

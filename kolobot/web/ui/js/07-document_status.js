@@ -57,11 +57,11 @@ async function smartPollTick() {
             loadDocumentOcr(currentViewingDocId);
         }
     }
-    const openImpactRows = document.querySelectorAll('[id^="doc-impact-row-"]:not(.hidden)');
+    const openImpactRows = document.querySelectorAll('[id^="doc-impact-row-"]:not(.hidden), [id^="m11-impact-row-"]:not(.hidden)');
     for (const row of openImpactRows) {
-        const docId = parseInt(row.id.replace('doc-impact-row-', ''));
+        const docId = parseInt(row.id.replace('doc-impact-row-', '').replace('m11-impact-row-', ''));
         if (docId) {
-            const d = allDocs.find(x => x.id === docId);
+            const d = (allDocs && allDocs.find(x => x.id === docId)) || (typeof allM11Docs !== 'undefined' && allM11Docs.find(x => x.id === docId));
             if (d && (d.status === 'queued' || (d.status && d.status.startsWith('processing_')))) {
                 reloadDocImpact(docId);
             }
@@ -107,7 +107,10 @@ async function fetchDocs() {
     try {
         const res = await fetch('/api/warehouse/documents');
         allDocs = await res.json();
-        document.getElementById('docs-count').innerText = allDocs.length;
+        const docsCountEl = document.getElementById('docs-count');
+        if (docsCountEl) {
+            docsCountEl.innerText = allDocs.filter(d => !isM11Doc(d)).length;
+        }
         filterDocs();
         checkSmartPolling();
     } catch(e) {
